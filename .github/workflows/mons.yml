@@ -57,10 +57,18 @@ jobs:
           await input.fill(process.env.SHORT_URL);
           await input.press("Enter");
 
-          await page.waitForFunction(() => {
-            const btn = document.querySelector("button.download");
-            return btn && btn.offsetParent !== null;
-          }, { timeout: 120000 });
+          # await page.waitForFunction(() => {
+          #   const btn = document.querySelector("button.download");
+          #   return btn && btn.offsetParent !== null;
+          # }, { timeout: 120000 });
+
+          await page.waitForSelector(
+            "button.download",
+            {
+              state: "visible",
+              timeout: 300000
+            }
+          );
 
           const btn = page.locator("button.download");
 
