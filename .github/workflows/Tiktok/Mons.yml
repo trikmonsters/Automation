@@ -131,7 +131,7 @@ jobs:
         if: ${{ github.event.inputs.upload_tiktok == 'true' }}
         env:
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
-          BUFFER_CHANNEL_ID: "6a2032d8c687a22dd457622f"
+          BUFFER_CHANNEL_ID: "6a2ef6a438b557934595f88c"
           TIKTOK_CAPTION: ${{ github.event.inputs.tiktok_description }}
           VIDEO_URL: ${{ env.VIDEO_URL }}
         run: |
