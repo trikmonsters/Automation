@@ -1,4 +1,4 @@
-name: Upload Gen Z
+name: Upload Mons
 
 permissions:
   contents: write
@@ -112,7 +112,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create tiktok_video \
+          gh release create mons \
             --repo "${{ github.repository }}" \
             --title "Mons TikTok Video" \
             --notes "Temporary hosting for Buffer API" \
