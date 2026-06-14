@@ -1,0 +1,172 @@
+name: Upload Shorts To Buffer
+
+on:
+  workflow_dispatch:
+    inputs:
+      youtube_url:
+        required: true
+        type: string
+      tiktok_description:
+        required: false
+        type: string
+      upload_tiktok:
+        required: true
+        default: "true"
+        type: string
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: |
+          npm init -y
+          npm install playwright
+          npx playwright install chromium --with-deps
+
+      - name: Download video
+        run: |
+          cat > script.mjs <<'EOF'
+          import fs from "fs";
+          import { chromium } from "playwright";
+
+          const browser = await chromium.launch({
+            headless: true,
+            args: ["--no-sandbox"]
+          });
+
+          const context = await browser.newContext({
+            acceptDownloads: true
+          });
+
+          const page = await context.newPage();
+
+          await page.goto("https://ytshortsdl.io/");
+
+          const input = page.locator("input").first();
+          await input.fill(process.env.SHORT_URL);
+          await input.press("Enter");
+
+          await page.waitForFunction(() => {
+            const btn = document.querySelector("button.download");
+            return btn && btn.offsetParent !== null;
+          }, { timeout: 120000 });
+
+          const btn = page.locator("button.download");
+
+          try {
+            const popupPromise = page.waitForEvent("popup", { timeout: 10000 });
+            await btn.click({ force: true });
+            const popup = await popupPromise;
+            await popup.close();
+          } catch {}
+
+          await page.waitForTimeout(2000);
+
+          const downloadPromise = page.waitForEvent("download", { timeout: 60000 });
+          await btn.click({ force: true });
+
+          const download = await downloadPromise;
+          const outputFile = `video-${Date.now()}.mp4`;
+          await download.saveAs(outputFile);
+
+          fs.appendFileSync(process.env.GITHUB_ENV, `OUTPUT_FILE=${outputFile}\n`);
+
+          await browser.close();
+          EOF
+
+          node script.mjs
+        env:
+          SHORT_URL: ${{ github.event.inputs.youtube_url }}
+
+      - name: Delete old release
+        if: ${{ github.event.inputs.upload_tiktok == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+
+          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases \
+            --jq '.[] | select(.tag_name == "tiktok_video") | .id' \
+            2>/dev/null || echo "")
+
+          if [ -n "$RELEASE_ID" ]; then
+            gh api -X DELETE repos/${{ github.repository }}/releases/$RELEASE_ID
+            sleep 2
+            gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/tiktok_video || true
+            sleep 2
+          fi
+
+      - name: Upload video to GitHub Release
+        if: ${{ github.event.inputs.upload_tiktok == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create tiktok_video \
+            --repo "${{ github.repository }}" \
+            --title "TikTok Video (temporary hosting)" \
+            --notes "Temporary hosting for Buffer API" \
+            "${{ env.OUTPUT_FILE }}"
+
+      - name: Get video URL from release
+        if: ${{ github.event.inputs.upload_tiktok == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sleep 5
+
+          VIDEO_URL=$(gh api repos/${{ github.repository }}/releases/tags/tiktok_video \
+            --jq '.assets[0].browser_download_url')
+
+          echo "VIDEO_URL=${VIDEO_URL}" >> $GITHUB_ENV
+
+      - name: Upload TikTok via Buffer API
+        if: ${{ github.event.inputs.upload_tiktok == 'true' }}
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_CHANNEL_ID: "6a2032d8c687a22dd457622f"
+          TIKTOK_CAPTION: ${{ github.event.inputs.tiktok_description }}
+          VIDEO_URL: ${{ env.VIDEO_URL }}
+        run: |
+          python3 - <<'PYEOF'
+          import os
+          import json
+          import urllib.request
+          from datetime import datetime, timezone, timedelta
+
+          due_at = (
+              datetime.now(timezone.utc) + timedelta(minutes=1)
+          ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+          mutation = (
+              "mutation { createPost(input: {"
+              "text: " + json.dumps(os.environ.get('TIKTOK_CAPTION', '')) +
+              " channelId: " + json.dumps(os.environ['BUFFER_CHANNEL_ID']) +
+              " schedulingType: automatic"
+              " mode: customScheduled"
+              " dueAt: " + json.dumps(due_at) +
+              " assets: [{ video: { url: " + json.dumps(os.environ['VIDEO_URL']) + " } }]"
+              "}) {"
+              " ... on PostActionSuccess { post { id } }"
+              " ... on MutationError { message }"
+              "} }"
+          )
+
+          req = urllib.request.Request(
+              "https://api.buffer.com/graphql",
+              data=json.dumps({"query": mutation}).encode(),
+              headers={
+                  "Content-Type": "application/json",
+                  "Authorization": "Bearer " + os.environ["BUFFER_API_KEY"]
+              }
+          )
+
+          print(urllib.request.urlopen(req).read().decode())
+          PYEOF
