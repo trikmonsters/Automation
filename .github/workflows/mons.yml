@@ -37,52 +37,77 @@ jobs:
           import fs from "fs";
           import { chromium } from "playwright";
 
-          const browser = await chromium.launch({
-            headless: true,
-            args: ["--no-sandbox"]
-          });
+          const MAX_RETRIES = 3;
+          let lastError;
 
-          const context = await browser.newContext({
-            acceptDownloads: true
-          });
+          for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            console.log(`\n=== Attempt ${attempt}/${MAX_RETRIES} ===`);
+            const browser = await chromium.launch({
+              headless: true,
+              args: ["--no-sandbox"]
+            });
 
-          const page = await context.newPage();
+            const context = await browser.newContext({ acceptDownloads: true });
+            const page = await context.newPage();
 
-          await page.goto("https://ytshortsdl.io/");
+            try {
+              await page.goto("https://ytshortsdl.io/", { timeout: 30000 });
 
-          const input = page.locator("input").first();
-          await input.fill(process.env.SHORT_URL);
-          await input.press("Enter");
+              const input = page.locator("input").first();
+              await input.fill(process.env.SHORT_URL);
+              await input.press("Enter");
 
-          await page.waitForSelector(
-            "button.download",
-            {
-              state: "visible",
-              timeout: 300000
+              console.log("Waiting for download button...");
+              await page.waitForSelector("button.download", {
+                state: "visible",
+                timeout: 110000
+              });
+
+              const btn = page.locator("button.download");
+
+              // Dismiss popup jika muncul
+              try {
+                const popupPromise = page.waitForEvent("popup", { timeout: 10000 });
+                await btn.click({ force: true });
+                const popup = await popupPromise;
+                await popup.close();
+                console.log("Popup dismissed.");
+              } catch {
+                console.log("No popup detected.");
+              }
+
+              await page.waitForTimeout(2000);
+
+              console.log("Starting download...");
+              const downloadPromise = page.waitForEvent("download", { timeout: 60000 });
+              await btn.click({ force: true });
+
+              const download = await downloadPromise;
+              const outputFile = `video-${Date.now()}.mp4`;
+              await download.saveAs(outputFile);
+
+              console.log(`Download success: ${outputFile}`);
+              fs.appendFileSync(process.env.GITHUB_ENV, `OUTPUT_FILE=${outputFile}\n`);
+
+              await browser.close();
+              process.exit(0); // sukses, keluar
+
+            } catch (err) {
+              lastError = err;
+              console.error(`Attempt ${attempt} failed: ${err.message}`);
+              await browser.close();
+
+              if (attempt < MAX_RETRIES) {
+                const waitSec = attempt * 10;
+                console.log(`Waiting ${waitSec}s before retry...`);
+                await new Promise(r => setTimeout(r, waitSec * 1000));
+              }
             }
-          );
+          }
 
-          const btn = page.locator("button.download");
-
-          try {
-            const popupPromise = page.waitForEvent("popup", { timeout: 10000 });
-            await btn.click({ force: true });
-            const popup = await popupPromise;
-            await popup.close();
-          } catch {}
-
-          await page.waitForTimeout(2000);
-
-          const downloadPromise = page.waitForEvent("download", { timeout: 60000 });
-          await btn.click({ force: true });
-
-          const download = await downloadPromise;
-          const outputFile = `video-${Date.now()}.mp4`;
-          await download.saveAs(outputFile);
-
-          fs.appendFileSync(process.env.GITHUB_ENV, `OUTPUT_FILE=${outputFile}\n`);
-
-          await browser.close();
+          console.error(`All ${MAX_RETRIES} attempts failed.`);
+          console.error(lastError);
+          process.exit(1);
           EOF
 
           node script.mjs
