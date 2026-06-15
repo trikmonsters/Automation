@@ -308,8 +308,8 @@ jobs:
               env_file.write(f"GEMINI_DESCRIPTION={description}\n")
               env_file.write(f"GEMINI_TAGS={tags}\n")
               env_file.write("TIKTOK_CAPTION<<EOF_CAPTION\n")
-              env_file.write(f"{title}\n")
-              env_file.write(f"{description}")
+              env_file.write(f"{title}\n\n")
+              env_file.write(f"{description}\n")
               env_file.write(f"{tags}\n")
               env_file.write("EOF_CAPTION\n")
 
