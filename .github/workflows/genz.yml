@@ -249,6 +249,7 @@ jobs:
           - Do not explain your analysis process.
           - Do not add any notes or commentary.
           - Add hashtag (#) to each tag with no spaces within the tag.
+          - Use the language that corresponds to the song. If the song is in English, use English for the description and tags. However, do not use it for everything; keep the title and names in their original language. In short, maintain the original language for titles and names, while using the song's language for the metadata.
           - Do not make assumptions if the song cannot be identified.
           - If the song is unrecognized, use the video's visual content as the basis for title, description, and tags."""
 
