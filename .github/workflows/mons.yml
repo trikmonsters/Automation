@@ -284,7 +284,7 @@ jobs:
           tags        = lines[2] if len(lines) > 2 else ""
 
           # TikTok caption = title + newline + description + newline + tags
-          tiktok_caption = f"{title}\n{description}\n{tags}"
+          tiktok_caption = f"{title}\n\n{description}\n{tags}"
 
           print(f"\nTitle      : {title}")
           print(f"Description: {description}")
@@ -292,7 +292,7 @@ jobs:
           print(f"\nTikTok Caption:\n{tiktok_caption}")
 
           with open(os.environ["GITHUB_ENV"], "a") as env_file:
-              env_file.write(f"GEMINI_TITLE={title}\n")
+              env_file.write(f"GEMINI_TITLE={title}\n\n")
               env_file.write(f"GEMINI_DESCRIPTION={description}\n")
               env_file.write(f"GEMINI_TAGS={tags}\n")
               env_file.write(f"TIKTOK_CAPTION={tiktok_caption.replace(chr(10), '\\n')}\n")
