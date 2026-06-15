@@ -122,6 +122,123 @@ jobs:
             --title "Mons TikTok Video" \
             --notes "Temporary hosting for Buffer API" \
             "${{ env.OUTPUT_FILE }}"
+    
+
+      - name: Process video with Gemini AI
+        if: ${{ github.event.inputs.upload_tiktok == 'true' }}
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          VIDEO_FILE: ${{ env.OUTPUT_FILE }}
+        run: |
+          python3 - <<'PYEOF'
+          import os
+          import json
+          import time
+          import urllib.request
+
+          api_key = os.environ["GEMINI_API_KEY"]
+          video_file = os.environ["VIDEO_FILE"]
+
+          # === STEP 1: Upload video via File API ===
+          print("Uploading video to Gemini File API...")
+
+          with open(video_file, "rb") as f:
+              video_bytes = f.read()
+
+          file_size = len(video_bytes)
+
+          # Initiate resumable upload
+          init_req = urllib.request.Request(
+              f"https://generativelanguage.googleapis.com/upload/v1beta/files?key={api_key}",
+              data=json.dumps({
+                  "file": {"display_name": video_file}
+              }).encode(),
+              headers={
+                  "Content-Type": "application/json",
+                  "X-Goog-Upload-Protocol": "resumable",
+                  "X-Goog-Upload-Command": "start",
+                  "X-Goog-Upload-Header-Content-Length": str(file_size),
+                  "X-Goog-Upload-Header-Content-Type": "video/mp4",
+              },
+              method="POST"
+          )
+
+          init_resp = urllib.request.urlopen(init_req)
+          upload_url = init_resp.headers["X-Goog-Upload-URL"]
+          print(f"Upload URL obtained: {upload_url[:60]}...")
+
+          # Upload the actual bytes
+          upload_req = urllib.request.Request(
+              upload_url,
+              data=video_bytes,
+              headers={
+                  "Content-Length": str(file_size),
+                  "X-Goog-Upload-Offset": "0",
+                  "X-Goog-Upload-Command": "upload, finalize",
+              },
+              method="POST"
+          )
+
+          upload_resp = urllib.request.urlopen(upload_req)
+          file_info = json.loads(upload_resp.read().decode())
+          file_uri = file_info["file"]["uri"]
+          file_name = file_info["file"]["name"]
+          print(f"File uploaded: {file_uri}")
+
+          # === STEP 2: Wait until file is ACTIVE ===
+          print("Waiting for file to be processed...")
+          while True:
+              check_req = urllib.request.Request(
+                  f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key}"
+              )
+              check_resp = json.loads(urllib.request.urlopen(check_req).read().decode())
+              state = check_resp.get("state", "")
+              print(f"  File state: {state}")
+              if state == "ACTIVE":
+                  break
+              elif state == "FAILED":
+                  raise Exception("Gemini file processing failed")
+              time.sleep(5)
+
+          # === STEP 3: Generate content with Gemini ===
+          print("Generating content with Gemini...")
+
+          prompt = "Analyze this short video and generate a compelling TikTok caption with relevant hashtags."
+          # Ganti prompt sesuai kebutuhan kamu
+
+          generate_req = urllib.request.Request(
+              f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}",
+              data=json.dumps({
+                  "contents": [{
+                      "parts": [
+                          {
+                              "file_data": {
+                                  "mime_type": "video/mp4",
+                                  "file_uri": file_uri
+                              }
+                          },
+                          {
+                              "text": prompt
+                          }
+                      ]
+                  }]
+              }).encode(),
+              headers={"Content-Type": "application/json"},
+              method="POST"
+          )
+
+          result = json.loads(urllib.request.urlopen(generate_req).read().decode())
+          gemini_output = result["candidates"][0]["content"]["parts"][0]["text"]
+          print("=== Gemini Output ===")
+          print(gemini_output)
+
+          # Simpan ke GITHUB_ENV kalau mau dipakai di step berikutnya
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              # Escape newline agar aman di env
+              safe_output = gemini_output.replace("\n", "\\n")
+              f.write(f"GEMINI_CAPTION={safe_output}\n")
+
+          PYEOF
 
       - name: Get video URL from release
         if: ${{ github.event.inputs.upload_tiktok == 'true' }}
