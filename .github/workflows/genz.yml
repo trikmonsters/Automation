@@ -40,20 +40,27 @@ jobs:
           const MAX_RETRIES = 3;
           let lastError;
 
+          const browser = await chromium.launch({
+            headless: true,
+            args: ["--no-sandbox"]
+          });
+
           for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
             console.log(`\n=== Attempt ${attempt}/${MAX_RETRIES} ===`);
-            const browser = await chromium.launch({
-              headless: true,
-              args: ["--no-sandbox"]
-            });
 
             const context = await browser.newContext({ acceptDownloads: true });
             const page = await context.newPage();
 
             try {
-              await page.goto("https://ytshortsdl.io/", { timeout: 30000 });
+              console.log("Loading page...");
+              await page.goto("https://ytshortsdl.io/", {
+                timeout: 30000,
+                waitUntil: "domcontentloaded"
+              });
 
+              console.log("Filling URL input...");
               const input = page.locator("input").first();
+              await input.waitFor({ state: "visible", timeout: 15000 });
               await input.fill(process.env.SHORT_URL);
               await input.press("Enter");
 
@@ -88,22 +95,27 @@ jobs:
               console.log(`Download success: ${outputFile}`);
               fs.appendFileSync(process.env.GITHUB_ENV, `OUTPUT_FILE=${outputFile}\n`);
 
+              await context.close();
               await browser.close();
               process.exit(0);
 
             } catch (err) {
               lastError = err;
               console.error(`Attempt ${attempt} failed: ${err.message}`);
-              await browser.close();
+
+              // Tutup context (tab) lama
+              await context.close();
 
               if (attempt < MAX_RETRIES) {
                 const waitSec = attempt * 10;
                 console.log(`Waiting ${waitSec}s before retry...`);
                 await new Promise(r => setTimeout(r, waitSec * 1000));
+                console.log("Will open fresh page on next attempt...");
               }
             }
           }
 
+          await browser.close();
           console.error(`All ${MAX_RETRIES} attempts failed.`);
           console.error(lastError);
           process.exit(1);
