@@ -60,12 +60,11 @@ jobs:
               console.log("Waiting for download button...");
               await page.waitForSelector("button.download", {
                 state: "visible",
-                timeout: 110000
+                timeout: 60000
               });
 
               const btn = page.locator("button.download");
 
-              // Dismiss popup jika muncul
               try {
                 const popupPromise = page.waitForEvent("popup", { timeout: 10000 });
                 await btn.click({ force: true });
@@ -90,7 +89,7 @@ jobs:
               fs.appendFileSync(process.env.GITHUB_ENV, `OUTPUT_FILE=${outputFile}\n`);
 
               await browser.close();
-              process.exit(0); // sukses, keluar
+              process.exit(0);
 
             } catch (err) {
               lastError = err;
@@ -124,6 +123,7 @@ jobs:
           import json
           import time
           import urllib.request
+          import urllib.error
 
           api_key = os.environ["GEMINI_API_KEY"]
           video_file = os.environ["VIDEO_FILE"]
@@ -153,7 +153,7 @@ jobs:
 
           init_resp = urllib.request.urlopen(init_req)
           upload_url = init_resp.headers["X-Goog-Upload-URL"]
-          print(f"Upload URL obtained.")
+          print("Upload URL obtained.")
 
           upload_req = urllib.request.Request(
               upload_url,
@@ -189,52 +189,56 @@ jobs:
 
           print("Generating metadata with Gemini 3.5 Flash...")
 
-          prompt = """Anda adalah analis video musik dan metadata specialist.
+          prompt = """You are a music video analyst and metadata specialist.
 
-          Tugas Anda:
-          - Analisis video yang diberikan.
-          - Identifikasi lagu dan artis/penciptanya.
+          Your tasks:
+          - Thoroughly analyze the provided video: visuals, any text appearing on screen, audible lyrics, and audio.
+          - Identify the song using this priority order:
+            1. Read any lyrics or title text visible on screen.
+            2. Listen carefully to the lyrics being sung — use only what is ACTUALLY heard, not assumed.
+            3. If a song title or artist name appears in the video, prioritize that information.
+            4. Do not guess based on melody alone.
+            5. If you are uncertain between two songs, choose based on the lyrics most frequently heard in the video.
+            6. If the song truly cannot be identified with confidence, base the output on the video's visual content instead.
           
-          Buat:
+          Create:
           - Title
           - Description
           - Tags
           
-          Aturan Title
-          Untuk video musik gunakan format:
-          [Nama Lagu] - [Nama Artis]
+          Title Rules
+          For music videos use this format:
+          [Song Name] - [Artist Name]
           
-          Jangan tambahkan:
+          Do NOT add:
           Official Video, Lyrics, HD, 4K, Viral, Emoji, Hashtag
           
-          Aturan Description
-          - Ambil bagian yang paling ikonik atau paling dikenal dari reff/chorus lagu.
-          - Gunakan hanya cuplikan pendek.
-          - Jika reff tidak dapat diidentifikasi dengan yakin, buat ringkasan singkat tema lagu dalam 1 kalimat.
-          - Jangan menambahkan promosi, CTA, atau informasi tambahan yang tidak relevan.
+          Description Rules
+          - Use the most iconic or well-known part of the chorus/refrain.
+          - Keep it short — just a brief excerpt.
+          - If the chorus cannot be identified with confidence, write a one-sentence summary of the song's theme.
+          - Do not add promotions, CTAs, or any irrelevant information.
           
-          Aturan Tags
-          - Maksimal 4 tag.
-          - Fokus hanya pada:
-            -- Nama lagu
-            -- Nama artis
-            -- Genre utama (jika jelas)
-            -- Background (misal Aesthetic)
+          Tags Rules
+          - Maximum 4 tags.
+          - Focus only on:
+            -- Song name
+            -- Artist name
+            -- Main genre (if clearly identifiable)
+            -- Background style (e.g. Aesthetic)
           
-          Format Output
-          [Nama Lagu] - [Nama Artis]
+          Output Format (strictly follow this, 3 lines only):
+          [Song Name] - [Artist Name]
+          [Short chorus excerpt or one-sentence theme summary]
+          #[SongName] #[ArtistName] #[Genre] #[Background]
           
-          [Cuplikan singkat reff/chorus atau ringkasan tema lagu]
-          
-          #[Nama Lagu] #[Nama Artis] #[Genre] #[Background]
-          
-          Instruksi Penting
-          - Keluarkan hanya hasil akhir.
-          - Jangan menjelaskan proses analisis.
-          - Jangan menambahkan catatan.
-          - Tambahkan Hashtag(#) pada tags dan jangan tambahkan spasi.
-          - Jangan membuat asumsi jika lagu tidak dapat diidentifikasi.
-          - Jika lagu tidak dikenali, gunakan isi video sebagai dasar title, description, dan tags."""
+          Important Instructions
+          - Output the final result only.
+          - Do not explain your analysis process.
+          - Do not add any notes or commentary.
+          - Add hashtag (#) to each tag with no spaces within the tag.
+          - Do not make assumptions if the song cannot be identified.
+          - If the song is unrecognized, use the video's visual content as the basis for title, description, and tags."""
 
           generate_req = urllib.request.Request(
               f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={api_key}",
@@ -257,32 +261,40 @@ jobs:
               method="POST"
           )
 
-          result = json.loads(urllib.request.urlopen(generate_req).read().decode())
+          try:
+              response = urllib.request.urlopen(generate_req)
+              result = json.loads(response.read().decode())
+          except urllib.error.HTTPError as e:
+              print(f"HTTP Error {e.code}: {e.read().decode()}")
+              raise
+
+          if "candidates" not in result:
+              print("Unexpected response:", json.dumps(result, indent=2))
+              raise Exception("No candidates in Gemini response")
+
           gemini_output = result["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-          print("=== Gemini Output ===")
+          print("=== Gemini Raw Output ===")
           print(gemini_output)
 
-          # Parse: baris 1 = title, baris 2 = description, baris 3 = tags
+          # Parse: exactly 3 lines
           lines = [l.strip() for l in gemini_output.splitlines() if l.strip()]
           title       = lines[0] if len(lines) > 0 else "Untitled"
           description = lines[1] if len(lines) > 1 else ""
           tags        = lines[2] if len(lines) > 2 else ""
 
-          # Caption TikTok = description + newline + tags
-          tiktok_caption = f"{description}\n{tags}"
+          # TikTok caption = title + newline + description + newline + tags
+          tiktok_caption = f"{title}\n{description}\n{tags}"
 
           print(f"\nTitle      : {title}")
           print(f"Description: {description}")
           print(f"Tags       : {tags}")
-          print(f"TikTok Cap : {tiktok_caption}")
+          print(f"\nTikTok Caption:\n{tiktok_caption}")
 
-          # Simpan ke GITHUB_ENV
           with open(os.environ["GITHUB_ENV"], "a") as env_file:
               env_file.write(f"GEMINI_TITLE={title}\n")
               env_file.write(f"GEMINI_DESCRIPTION={description}\n")
               env_file.write(f"GEMINI_TAGS={tags}\n")
-              # Encode newline agar aman di env
               env_file.write(f"TIKTOK_CAPTION={tiktok_caption.replace(chr(10), '\\n')}\n")
 
           PYEOF
@@ -342,7 +354,6 @@ jobs:
           import urllib.request
           from datetime import datetime, timezone, timedelta
 
-          # Decode newline yang di-escape saat simpan ke env
           caption = os.environ.get("TIKTOK_CAPTION", "").replace("\\n", "\n")
 
           due_at = (
