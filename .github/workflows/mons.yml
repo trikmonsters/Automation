@@ -282,8 +282,7 @@ jobs:
           title       = lines[0] if len(lines) > 0 else "Untitled"
           description = lines[1] if len(lines) > 1 else ""
           tags        = lines[2] if len(lines) > 2 else ""
-
-          # TikTok caption = title + newline + description + newline + tags
+          
           tiktok_caption = f"{title}\n\n{description}\n{tags}"
 
           print(f"\nTitle      : {title}")
@@ -292,10 +291,14 @@ jobs:
           print(f"\nTikTok Caption:\n{tiktok_caption}")
 
           with open(os.environ["GITHUB_ENV"], "a") as env_file:
-              env_file.write(f"GEMINI_TITLE={title}\n\n")
+              env_file.write(f"GEMINI_TITLE={title}\n")
               env_file.write(f"GEMINI_DESCRIPTION={description}\n")
               env_file.write(f"GEMINI_TAGS={tags}\n")
-              env_file.write(f"TIKTOK_CAPTION={tiktok_caption.replace(chr(10), '\\n')}\n")
+              env_file.write("TIKTOK_CAPTION<<EOF_CAPTION\n")
+              env_file.write(f"{title}\n")
+              env_file.write(f"{description}")
+              env_file.write(f"{tags}\n")
+              env_file.write("EOF_CAPTION\n")
 
           PYEOF
 
@@ -354,7 +357,7 @@ jobs:
           import urllib.request
           from datetime import datetime, timezone, timedelta
 
-          caption = os.environ.get("TIKTOK_CAPTION", "").replace("\\n", "\n")
+          caption = os.environ.get("TIKTOK_CAPTION", "")
 
           due_at = (
               datetime.now(timezone.utc) + timedelta(minutes=1)
