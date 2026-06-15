@@ -9,9 +9,6 @@ on:
       youtube_url:
         required: true
         type: string
-      tiktok_description:
-        required: false
-        type: string
       upload_tiktok:
         required: false
         default: "true"
@@ -57,8 +54,6 @@ jobs:
           await input.fill(process.env.SHORT_URL);
           await input.press("Enter");
 
-          
-
           await page.waitForSelector(
             "button.download",
             {
@@ -94,38 +89,7 @@ jobs:
         env:
           SHORT_URL: ${{ github.event.inputs.youtube_url }}
 
-      - name: Delete old release
-        if: ${{ github.event.inputs.upload_tiktok == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
-
-          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases \
-            --jq '.[] | select(.tag_name == "mons") | .id' \
-            2>/dev/null || echo "")
-
-          if [ -n "$RELEASE_ID" ]; then
-            gh api -X DELETE repos/${{ github.repository }}/releases/$RELEASE_ID
-            sleep 2
-            gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/mons || true
-            sleep 2
-          fi
-
-      - name: Upload video to GitHub Release
-        if: ${{ github.event.inputs.upload_tiktok == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create mons \
-            --repo "${{ github.repository }}" \
-            --title "Mons TikTok Video" \
-            --notes "Temporary hosting for Buffer API" \
-            "${{ env.OUTPUT_FILE }}"
-    
-
       - name: Process video with Gemini AI
-        if: ${{ github.event.inputs.upload_tiktok == 'true' }}
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           VIDEO_FILE: ${{ env.OUTPUT_FILE }}
@@ -147,7 +111,6 @@ jobs:
 
           file_size = len(video_bytes)
 
-          # Initiate resumable upload
           init_req = urllib.request.Request(
               f"https://generativelanguage.googleapis.com/upload/v1beta/files?key={api_key}",
               data=json.dumps({
@@ -165,9 +128,8 @@ jobs:
 
           init_resp = urllib.request.urlopen(init_req)
           upload_url = init_resp.headers["X-Goog-Upload-URL"]
-          print(f"Upload URL obtained: {upload_url[:60]}...")
+          print(f"Upload URL obtained.")
 
-          # Upload the actual bytes
           upload_req = urllib.request.Request(
               upload_url,
               data=video_bytes,
@@ -200,11 +162,54 @@ jobs:
                   raise Exception("Gemini file processing failed")
               time.sleep(5)
 
-          # === STEP 3: Generate content with Gemini ===
-          print("Generating content with Gemini...")
+          print("Generating metadata with Gemini 3.5 Flash...")
 
-          prompt = "Analyze this short video and generate a compelling TikTok caption with relevant hashtags."
-          # Ganti prompt sesuai kebutuhan kamu
+          prompt = """Anda adalah analis video musik dan metadata specialist.
+
+          Tugas Anda:
+          - Analisis video yang diberikan.
+          - Identifikasi lagu dan artis/penciptanya.
+          
+          Buat:
+          - Title
+          - Description
+          - Tags
+          
+          Aturan Title
+          Untuk video musik gunakan format:
+          [Nama Lagu] - [Nama Artis]
+          
+          Jangan tambahkan:
+          Official Video, Lyrics, HD, 4K, Viral, Emoji, Hashtag
+          
+          Aturan Description
+          - Ambil bagian yang paling ikonik atau paling dikenal dari reff/chorus lagu.
+          - Gunakan hanya cuplikan pendek.
+          - Jika reff tidak dapat diidentifikasi dengan yakin, buat ringkasan singkat tema lagu dalam 1 kalimat.
+          - Jangan menambahkan promosi, CTA, atau informasi tambahan yang tidak relevan.
+          
+          Aturan Tags
+          - Maksimal 4 tag.
+          - Fokus hanya pada:
+            -- Nama lagu
+            -- Nama artis
+            -- Genre utama (jika jelas)
+            -- Background (misal Aesthetic)
+          
+          Format Output
+          [Nama Lagu] - [Nama Artis]
+          
+          [Cuplikan singkat reff/chorus atau ringkasan tema lagu]
+          
+          #[Nama Lagu] #[Nama Artis] #[Genre] #[Background]
+          
+          Instruksi Penting
+          - Keluarkan hanya hasil akhir.
+          - Jangan menjelaskan proses analisis.
+          - Jangan menambahkan catatan.
+          - Tambahkan Hashtag(#) pada tags dan jangan tambahkan spasi.
+          - Jangan membuat asumsi jika lagu tidak dapat diidentifikasi.
+          - Jika lagu tidak dikenali, gunakan isi video sebagai dasar title, description, dan tags."""
 
           generate_req = urllib.request.Request(
               f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={api_key}",
@@ -228,17 +233,63 @@ jobs:
           )
 
           result = json.loads(urllib.request.urlopen(generate_req).read().decode())
-          gemini_output = result["candidates"][0]["content"]["parts"][0]["text"]
+          gemini_output = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+
           print("=== Gemini Output ===")
           print(gemini_output)
 
-          # Simpan ke GITHUB_ENV kalau mau dipakai di step berikutnya
-          with open(os.environ["GITHUB_ENV"], "a") as f:
-              # Escape newline agar aman di env
-              safe_output = gemini_output.replace("\n", "\\n")
-              f.write(f"GEMINI_CAPTION={safe_output}\n")
+          # Parse: baris 1 = title, baris 2 = description, baris 3 = tags
+          lines = [l.strip() for l in gemini_output.splitlines() if l.strip()]
+          title       = lines[0] if len(lines) > 0 else "Untitled"
+          description = lines[1] if len(lines) > 1 else ""
+          tags        = lines[2] if len(lines) > 2 else ""
+
+          # Caption TikTok = description + newline + tags
+          tiktok_caption = f"{description}\n{tags}"
+
+          print(f"\nTitle      : {title}")
+          print(f"Description: {description}")
+          print(f"Tags       : {tags}")
+          print(f"TikTok Cap : {tiktok_caption}")
+
+          # Simpan ke GITHUB_ENV
+          with open(os.environ["GITHUB_ENV"], "a") as env_file:
+              env_file.write(f"GEMINI_TITLE={title}\n")
+              env_file.write(f"GEMINI_DESCRIPTION={description}\n")
+              env_file.write(f"GEMINI_TAGS={tags}\n")
+              # Encode newline agar aman di env
+              env_file.write(f"TIKTOK_CAPTION={tiktok_caption.replace(chr(10), '\\n')}\n")
 
           PYEOF
+
+      - name: Delete old release
+        if: ${{ github.event.inputs.upload_tiktok == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+
+          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases \
+            --jq '.[] | select(.tag_name == "mons") | .id' \
+            2>/dev/null || echo "")
+
+          if [ -n "$RELEASE_ID" ]; then
+            gh api -X DELETE repos/${{ github.repository }}/releases/$RELEASE_ID
+            sleep 2
+            gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/mons || true
+            sleep 2
+          fi
+
+      - name: Upload video to GitHub Release
+        if: ${{ github.event.inputs.upload_tiktok == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create mons \
+            --repo "${{ github.repository }}" \
+            --title "Mons TikTok Video" \
+            --notes "Temporary hosting for Buffer API" \
+            "${{ env.OUTPUT_FILE }}"
 
       - name: Get video URL from release
         if: ${{ github.event.inputs.upload_tiktok == 'true' }}
@@ -257,8 +308,8 @@ jobs:
         env:
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
           BUFFER_CHANNEL_ID: "6a2f0cb138b557934596594b"
-          TIKTOK_CAPTION: ${{ github.event.inputs.tiktok_description }}
           VIDEO_URL: ${{ env.VIDEO_URL }}
+          TIKTOK_CAPTION: ${{ env.TIKTOK_CAPTION }}
         run: |
           python3 - <<'PYEOF'
           import os
@@ -266,13 +317,16 @@ jobs:
           import urllib.request
           from datetime import datetime, timezone, timedelta
 
+          # Decode newline yang di-escape saat simpan ke env
+          caption = os.environ.get("TIKTOK_CAPTION", "").replace("\\n", "\n")
+
           due_at = (
               datetime.now(timezone.utc) + timedelta(minutes=1)
           ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
           mutation = (
               "mutation { createPost(input: {"
-              "text: " + json.dumps(os.environ.get('TIKTOK_CAPTION', '')) +
+              "text: " + json.dumps(caption) +
               " channelId: " + json.dumps(os.environ['BUFFER_CHANNEL_ID']) +
               " schedulingType: automatic"
               " mode: customScheduled"
