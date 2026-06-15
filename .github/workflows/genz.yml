@@ -9,11 +9,8 @@ on:
       youtube_url:
         required: true
         type: string
-      tiktok_description:
-        required: false
-        type: string
       upload_tiktok:
-        required: true
+        required: false
         default: "true"
         type: string
 
@@ -40,54 +37,270 @@ jobs:
           import fs from "fs";
           import { chromium } from "playwright";
 
-          const browser = await chromium.launch({
-            headless: true,
-            args: ["--no-sandbox"]
-          });
+          const MAX_RETRIES = 3;
+          let lastError;
 
-          const context = await browser.newContext({
-            acceptDownloads: true
-          });
+          for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            console.log(`\n=== Attempt ${attempt}/${MAX_RETRIES} ===`);
+            const browser = await chromium.launch({
+              headless: true,
+              args: ["--no-sandbox"]
+            });
 
-          const page = await context.newPage();
+            const context = await browser.newContext({ acceptDownloads: true });
+            const page = await context.newPage();
 
-          await page.goto("https://ytshortsdl.io/");
+            try {
+              await page.goto("https://ytshortsdl.io/", { timeout: 30000 });
 
-          const input = page.locator("input").first();
-          await input.fill(process.env.SHORT_URL);
-          await input.press("Enter");
+              const input = page.locator("input").first();
+              await input.fill(process.env.SHORT_URL);
+              await input.press("Enter");
 
-          await page.waitForFunction(() => {
-            const btn = document.querySelector("button.download");
-            return btn && btn.offsetParent !== null;
-          }, { timeout: 120000 });
+              console.log("Waiting for download button...");
+              await page.waitForSelector("button.download", {
+                state: "visible",
+                timeout: 60000
+              });
 
-          const btn = page.locator("button.download");
+              const btn = page.locator("button.download");
 
-          try {
-            const popupPromise = page.waitForEvent("popup", { timeout: 10000 });
-            await btn.click({ force: true });
-            const popup = await popupPromise;
-            await popup.close();
-          } catch {}
+              try {
+                const popupPromise = page.waitForEvent("popup", { timeout: 10000 });
+                await btn.click({ force: true });
+                const popup = await popupPromise;
+                await popup.close();
+                console.log("Popup dismissed.");
+              } catch {
+                console.log("No popup detected.");
+              }
 
-          await page.waitForTimeout(2000);
+              await page.waitForTimeout(2000);
 
-          const downloadPromise = page.waitForEvent("download", { timeout: 60000 });
-          await btn.click({ force: true });
+              console.log("Starting download...");
+              const downloadPromise = page.waitForEvent("download", { timeout: 60000 });
+              await btn.click({ force: true });
 
-          const download = await downloadPromise;
-          const outputFile = `video-${Date.now()}.mp4`;
-          await download.saveAs(outputFile);
+              const download = await downloadPromise;
+              const outputFile = `video-${Date.now()}.mp4`;
+              await download.saveAs(outputFile);
 
-          fs.appendFileSync(process.env.GITHUB_ENV, `OUTPUT_FILE=${outputFile}\n`);
+              console.log(`Download success: ${outputFile}`);
+              fs.appendFileSync(process.env.GITHUB_ENV, `OUTPUT_FILE=${outputFile}\n`);
 
-          await browser.close();
+              await browser.close();
+              process.exit(0);
+
+            } catch (err) {
+              lastError = err;
+              console.error(`Attempt ${attempt} failed: ${err.message}`);
+              await browser.close();
+
+              if (attempt < MAX_RETRIES) {
+                const waitSec = attempt * 10;
+                console.log(`Waiting ${waitSec}s before retry...`);
+                await new Promise(r => setTimeout(r, waitSec * 1000));
+              }
+            }
+          }
+
+          console.error(`All ${MAX_RETRIES} attempts failed.`);
+          console.error(lastError);
+          process.exit(1);
           EOF
 
           node script.mjs
         env:
           SHORT_URL: ${{ github.event.inputs.youtube_url }}
+
+      - name: Process video with Gemini AI
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          VIDEO_FILE: ${{ env.OUTPUT_FILE }}
+        run: |
+          python3 - <<'PYEOF'
+          import os
+          import json
+          import time
+          import urllib.request
+          import urllib.error
+
+          api_key = os.environ["GEMINI_API_KEY"]
+          video_file = os.environ["VIDEO_FILE"]
+
+          # === STEP 1: Upload video via File API ===
+          print("Uploading video to Gemini File API...")
+
+          with open(video_file, "rb") as f:
+              video_bytes = f.read()
+
+          file_size = len(video_bytes)
+
+          init_req = urllib.request.Request(
+              f"https://generativelanguage.googleapis.com/upload/v1beta/files?key={api_key}",
+              data=json.dumps({
+                  "file": {"display_name": video_file}
+              }).encode(),
+              headers={
+                  "Content-Type": "application/json",
+                  "X-Goog-Upload-Protocol": "resumable",
+                  "X-Goog-Upload-Command": "start",
+                  "X-Goog-Upload-Header-Content-Length": str(file_size),
+                  "X-Goog-Upload-Header-Content-Type": "video/mp4",
+              },
+              method="POST"
+          )
+
+          init_resp = urllib.request.urlopen(init_req)
+          upload_url = init_resp.headers["X-Goog-Upload-URL"]
+          print("Upload URL obtained.")
+
+          upload_req = urllib.request.Request(
+              upload_url,
+              data=video_bytes,
+              headers={
+                  "Content-Length": str(file_size),
+                  "X-Goog-Upload-Offset": "0",
+                  "X-Goog-Upload-Command": "upload, finalize",
+              },
+              method="POST"
+          )
+
+          upload_resp = urllib.request.urlopen(upload_req)
+          file_info = json.loads(upload_resp.read().decode())
+          file_uri = file_info["file"]["uri"]
+          file_name = file_info["file"]["name"]
+          print(f"File uploaded: {file_uri}")
+
+          # === STEP 2: Wait until file is ACTIVE ===
+          print("Waiting for file to be processed...")
+          while True:
+              check_req = urllib.request.Request(
+                  f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key}"
+              )
+              check_resp = json.loads(urllib.request.urlopen(check_req).read().decode())
+              state = check_resp.get("state", "")
+              print(f"  File state: {state}")
+              if state == "ACTIVE":
+                  break
+              elif state == "FAILED":
+                  raise Exception("Gemini file processing failed")
+              time.sleep(5)
+
+          print("Generating metadata with Gemini 3.5 Flash...")
+
+          prompt = """You are a music video analyst and metadata specialist.
+
+          Your tasks:
+          - Thoroughly analyze the provided video: visuals, any text appearing on screen, audible lyrics, and audio.
+          - Identify the song using this priority order:
+            1. Read any lyrics or title text visible on screen.
+            2. Listen carefully to the lyrics being sung — use only what is ACTUALLY heard, not assumed.
+            3. If a song title or artist name appears in the video, prioritize that information.
+            4. Do not guess based on melody alone.
+            5. If you are uncertain between two songs, choose based on the lyrics most frequently heard in the video.
+            6. If the song truly cannot be identified with confidence, base the output on the video's visual content instead.
+          
+          Create:
+          - Title
+          - Description
+          - Tags
+          
+          Title Rules
+          For music videos use this format:
+          [Song Name] - [Artist Name]
+          
+          Do NOT add:
+          Official Video, Lyrics, HD, 4K, Viral, Emoji, Hashtag
+          
+          Description Rules
+          - Use the most iconic or well-known part of the chorus/refrain.
+          - Keep it short — just a brief excerpt.
+          - If the chorus cannot be identified with confidence, write a one-sentence summary of the song's theme.
+          - Do not add promotions, CTAs, or any irrelevant information.
+          
+          Tags Rules
+          - Maximum 4 tags.
+          - Focus only on:
+            -- Song name
+            -- Artist name
+            -- Main genre (if clearly identifiable)
+            -- Background style (e.g. Aesthetic)
+          
+          Output Format (strictly follow this, 3 lines only):
+          [Song Name] - [Artist Name]
+          [Short chorus excerpt or one-sentence theme summary]
+          #[SongName] #[ArtistName] #[Genre] #[Background]
+          
+          Important Instructions
+          - Output the final result only.
+          - Do not explain your analysis process.
+          - Do not add any notes or commentary.
+          - Add hashtag (#) to each tag with no spaces within the tag.
+          - Do not make assumptions if the song cannot be identified.
+          - If the song is unrecognized, use the video's visual content as the basis for title, description, and tags."""
+
+          generate_req = urllib.request.Request(
+              f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={api_key}",
+              data=json.dumps({
+                  "contents": [{
+                      "parts": [
+                          {
+                              "file_data": {
+                                  "mime_type": "video/mp4",
+                                  "file_uri": file_uri
+                              }
+                          },
+                          {
+                              "text": prompt
+                          }
+                      ]
+                  }]
+              }).encode(),
+              headers={"Content-Type": "application/json"},
+              method="POST"
+          )
+
+          try:
+              response = urllib.request.urlopen(generate_req)
+              result = json.loads(response.read().decode())
+          except urllib.error.HTTPError as e:
+              print(f"HTTP Error {e.code}: {e.read().decode()}")
+              raise
+
+          if "candidates" not in result:
+              print("Unexpected response:", json.dumps(result, indent=2))
+              raise Exception("No candidates in Gemini response")
+
+          gemini_output = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+          print("=== Gemini Raw Output ===")
+          print(gemini_output)
+
+          # Parse: exactly 3 lines
+          lines = [l.strip() for l in gemini_output.splitlines() if l.strip()]
+          title       = lines[0] if len(lines) > 0 else "Untitled"
+          description = lines[1] if len(lines) > 1 else ""
+          tags        = lines[2] if len(lines) > 2 else ""
+          
+          tiktok_caption = f"{title}\n\n{description}\n{tags}"
+
+          print(f"\nTitle      : {title}")
+          print(f"Description: {description}")
+          print(f"Tags       : {tags}")
+          print(f"\nTikTok Caption:\n{tiktok_caption}")
+
+          with open(os.environ["GITHUB_ENV"], "a") as env_file:
+              env_file.write(f"GEMINI_TITLE={title}\n")
+              env_file.write(f"GEMINI_DESCRIPTION={description}\n")
+              env_file.write(f"GEMINI_TAGS={tags}\n")
+              env_file.write("TIKTOK_CAPTION<<EOF_CAPTION\n")
+              env_file.write(f"{title}\n")
+              env_file.write(f"{description}")
+              env_file.write(f"{tags}\n")
+              env_file.write("EOF_CAPTION\n")
+
+          PYEOF
 
       - name: Delete old release
         if: ${{ github.event.inputs.upload_tiktok == 'true' }}
@@ -97,13 +310,13 @@ jobs:
           set -e
 
           RELEASE_ID=$(gh api repos/${{ github.repository }}/releases \
-            --jq '.[] | select(.tag_name == "tiktok_video") | .id' \
+            --jq '.[] | select(.tag_name == "genz") | .id' \
             2>/dev/null || echo "")
 
           if [ -n "$RELEASE_ID" ]; then
             gh api -X DELETE repos/${{ github.repository }}/releases/$RELEASE_ID
             sleep 2
-            gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/tiktok_video || true
+            gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/genz || true
             sleep 2
           fi
 
@@ -112,9 +325,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create tiktok_video \
+          gh release create genz \
             --repo "${{ github.repository }}" \
-            --title "TikTok Video (temporary hosting)" \
+            --title "Gen Z TikTok Video" \
             --notes "Temporary hosting for Buffer API" \
             "${{ env.OUTPUT_FILE }}"
 
@@ -125,7 +338,7 @@ jobs:
         run: |
           sleep 5
 
-          VIDEO_URL=$(gh api repos/${{ github.repository }}/releases/tags/tiktok_video \
+          VIDEO_URL=$(gh api repos/${{ github.repository }}/releases/tags/genz \
             --jq '.assets[0].browser_download_url')
 
           echo "VIDEO_URL=${VIDEO_URL}" >> $GITHUB_ENV
@@ -135,8 +348,8 @@ jobs:
         env:
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
           BUFFER_CHANNEL_ID: "6a2ef6a438b557934595f88c"
-          TIKTOK_CAPTION: ${{ github.event.inputs.tiktok_description }}
           VIDEO_URL: ${{ env.VIDEO_URL }}
+          TIKTOK_CAPTION: ${{ env.TIKTOK_CAPTION }}
         run: |
           python3 - <<'PYEOF'
           import os
@@ -144,13 +357,15 @@ jobs:
           import urllib.request
           from datetime import datetime, timezone, timedelta
 
+          caption = os.environ.get("TIKTOK_CAPTION", "")
+
           due_at = (
               datetime.now(timezone.utc) + timedelta(minutes=1)
           ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
           mutation = (
               "mutation { createPost(input: {"
-              "text: " + json.dumps(os.environ.get('TIKTOK_CAPTION', '')) +
+              "text: " + json.dumps(caption) +
               " channelId: " + json.dumps(os.environ['BUFFER_CHANNEL_ID']) +
               " schedulingType: automatic"
               " mode: customScheduled"
