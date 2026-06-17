@@ -74,14 +74,14 @@ jobs:
         run: |
           if [ ! -f tts-script.txt ]; then
             cat > tts-script.txt << 'SCRIPT'
-Selamat datang. Saya ingin berbicara dengan Anda tentang sesuatu yang sangat penting — kesehatan mental Anda.
-
-Kecemasan adalah respons alami tubuh terhadap ancaman yang dirasakan. Ketika kita merasa terancam, sistem saraf kita mengaktifkan respons "fight or flight". Namun, ketika respons ini terjadi terlalu sering, ia bisa menjadi beban yang berat dalam kehidupan sehari-hari.
-
-Penelitian menunjukkan bahwa praktik mindfulness selama delapan minggu dapat secara signifikan mengurangi gejala kecemasan dan depresi. Ini bukan hanya teori — ini adalah perubahan nyata yang terukur dalam struktur otak Anda.
-
-Ingatlah: meminta bantuan bukan tanda kelemahan. Justru sebaliknya, itu adalah tanda keberanian dan kebijaksanaan tertinggi. Anda tidak harus menanggung semua ini sendirian.
-SCRIPT
+            Selamat datang. Saya ingin berbicara dengan Anda tentang sesuatu yang sangat penting — kesehatan mental Anda.
+            
+            Kecemasan adalah respons alami tubuh terhadap ancaman yang dirasakan. Ketika kita merasa terancam, sistem saraf kita mengaktifkan respons "fight or flight". Namun, ketika respons ini terjadi terlalu sering, ia bisa menjadi beban yang berat dalam kehidupan sehari-hari.
+            
+            Penelitian menunjukkan bahwa praktik mindfulness selama delapan minggu dapat secara signifikan mengurangi gejala kecemasan dan depresi. Ini bukan hanya teori — ini adalah perubahan nyata yang terukur dalam struktur otak Anda.
+            
+            Ingatlah: meminta bantuan bukan tanda kelemahan. Justru sebaliknya, itu adalah tanda keberanian dan kebijaksanaan tertinggi. Anda tidak harus menanggung semua ini sendirian.
+            SCRIPT
             echo "✅ Default script created."
           else
             echo "✅ Using existing tts-script.txt"
