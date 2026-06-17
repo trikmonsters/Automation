@@ -1,201 +1,268 @@
-name: Gemini 3.1 Flash TTS
+name: 🧠 Psychology Expert TTS — Gemini 3.1 Flash
+
+# ─────────────────────────────────────────────────────────────
+#  CARA PAKAI
+#  1. Simpan file ini ke .github/workflows/gemini-psych-tts.yml
+#  2. Tambahkan secret: Settings → Secrets → GEMINI_API_KEY
+#  3. Buat file tts-script.txt di root repo berisi teks psikologi
+#     (pisahkan paragraf dengan baris kosong)
+#  4. Push → workflow otomatis berjalan
+#     ATAU jalankan manual: Actions → workflow → Run workflow
+# ─────────────────────────────────────────────────────────────
 
 on:
   workflow_dispatch:
     inputs:
-      text:
-        description: "Teks yang ingin diubah menjadi audio"
+      voice:
+        description: "Pilih suara psikolog"
         required: true
-        default: "Halo, selamat datang di demo Gemini TTS!"
-      voice_name:
-        description: "Nama suara (Kore, Puck, Zephyr, Aoede, Fenrir, dll.)"
-        required: false
-        default: "Kore"
-      mode:
-        description: "Mode TTS"
-        required: true
-        default: "single"
+        default: "Sulafat"
         type: choice
         options:
-          - single
-          - multi
+          - Sulafat        # warm  — hangat & meyakinkan
+          - Sadaltager     # knowledgeable — kompeten & terpercaya
+          - Gacrux         # mature — dewasa & tenang
+          - Vindemiatrix   # gentle — lembut & empatik
+
+      paragraph_gap:
+        description: "Jeda antar paragraf (detik)"
+        required: true
+        default: "2.5"
+        type: choice
+        options:
+          - "2.0"
+          - "2.5"
+          - "3.0"
+
+      language:
+        description: "Bahasa narasi"
+        required: true
+        default: "id-ID"
+        type: choice
+        options:
+          - id-ID   # Bahasa Indonesia
+          - en-US   # English
 
   push:
     paths:
-      - "tts-input.txt"   # Otomatis trigger jika file input berubah
+      - "tts-script.txt"   # otomatis generate saat file berubah
 
 jobs:
-  generate-tts:
-    name: Generate Speech via Gemini TTS
+  generate-psychology-tts:
+    name: "Generate Psychology Expert Audio"
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
-      # ── 1. Checkout repo ────────────────────────────────────────────
+      # ── 1. Checkout ──────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Setup Python ─────────────────────────────────────────────
-      - name: Set up Python
+      # ── 2. Python ────────────────────────────────────────────────
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
 
-      # ── 3. Install dependencies ──────────────────────────────────────
+      # ── 3. Dependencies ──────────────────────────────────────────
       - name: Install dependencies
-        run: |
-          pip install --upgrade google-genai
+        run: pip install --upgrade google-genai pydub
 
-      # ── 4. Generate audio (single speaker) ──────────────────────────
-      - name: Generate TTS Audio (Single Speaker)
-        if: ${{ github.event.inputs.mode == 'single' || github.event_name == 'push' }}
+      # ── 4. Siapkan script default jika belum ada ─────────────────
+      - name: Prepare default TTS script
+        run: |
+          if [ ! -f tts-script.txt ]; then
+            cat > tts-script.txt << 'SCRIPT'
+Selamat datang. Saya ingin berbicara dengan Anda tentang sesuatu yang sangat penting — kesehatan mental Anda.
+
+Kecemasan adalah respons alami tubuh terhadap ancaman yang dirasakan. Ketika kita merasa terancam, sistem saraf kita mengaktifkan respons "fight or flight". Namun, ketika respons ini terjadi terlalu sering, ia bisa menjadi beban yang berat dalam kehidupan sehari-hari.
+
+Penelitian menunjukkan bahwa praktik mindfulness selama delapan minggu dapat secara signifikan mengurangi gejala kecemasan dan depresi. Ini bukan hanya teori — ini adalah perubahan nyata yang terukur dalam struktur otak Anda.
+
+Ingatlah: meminta bantuan bukan tanda kelemahan. Justru sebaliknya, itu adalah tanda keberanian dan kebijaksanaan tertinggi. Anda tidak harus menanggung semua ini sendirian.
+SCRIPT
+            echo "✅ Default script created."
+          else
+            echo "✅ Using existing tts-script.txt"
+          fi
+
+      # ── 5. Generate TTS ──────────────────────────────────────────
+      - name: Generate Psychology TTS Audio
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          INPUT_TEXT: ${{ github.event.inputs.text || 'Halo dari Gemini TTS!' }}
-          VOICE_NAME: ${{ github.event.inputs.voice_name || 'Kore' }}
+          VOICE_NAME:     ${{ github.event.inputs.voice || 'Sulafat' }}
+          PARA_GAP:       ${{ github.event.inputs.paragraph_gap || '2.5' }}
+          LANGUAGE:       ${{ github.event.inputs.language || 'id-ID' }}
         run: |
-          python - <<'EOF'
-          import os
-          import wave
+          python3 - << 'PYEOF'
+          import os, wave, struct, time, textwrap
           from google import genai
           from google.genai import types
 
-          def save_wave(filename, pcm, channels=1, rate=24000, sample_width=2):
-              with wave.open(filename, "wb") as wf:
-                  wf.setnchannels(channels)
-                  wf.setsampwidth(sample_width)
-                  wf.setframerate(rate)
-                  wf.writeframes(pcm)
+          # ── Konfigurasi ────────────────────────────────────────────
+          API_KEY    = os.environ["GEMINI_API_KEY"]
+          VOICE_NAME = os.environ.get("VOICE_NAME", "Sulafat")
+          PARA_GAP   = float(os.environ.get("PARA_GAP", "2.5"))
+          LANGUAGE   = os.environ.get("LANGUAGE", "id-ID")
+          SAMPLE_RATE = 24_000
+          CHANNELS    = 1
+          SAMPLE_WIDTH = 2  # 16-bit PCM
 
-          client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-          text   = os.environ.get("INPUT_TEXT", "Hello from Gemini TTS!")
-          voice  = os.environ.get("VOICE_NAME", "Kore")
+          # ── Baca script ────────────────────────────────────────────
+          with open("tts-script.txt", encoding="utf-8") as f:
+              raw_text = f.read()
 
-          # Baca dari file jika push event
-          if os.path.exists("tts-input.txt"):
-              with open("tts-input.txt") as f:
-                  text = f.read().strip() or text
+          # Pisah per paragraf (baris kosong sebagai pemisah)
+          paragraphs = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
+          print(f"📄 Script: {len(paragraphs)} paragraf ditemukan")
+          print(f"🎙️  Voice : {VOICE_NAME}")
+          print(f"⏸️  Jeda  : {PARA_GAP}s antar paragraf")
+          print(f"🌐 Bahasa: {LANGUAGE}")
+          print("─" * 60)
 
-          print(f"[TTS] Model  : gemini-3.1-flash-tts-preview")
-          print(f"[TTS] Voice  : {voice}")
-          print(f"[TTS] Text   : {text[:80]}{'...' if len(text)>80 else ''}")
+          # ── Helper: silence PCM ────────────────────────────────────
+          def silence_pcm(seconds: float) -> bytes:
+              n_samples = int(SAMPLE_RATE * seconds)
+              return struct.pack(f"<{n_samples}h", *([0] * n_samples))
 
-          for attempt in range(3):           # retry untuk 500 error sesekali
-              try:
-                  response = client.models.generate_content(
-                      model="gemini-3.1-flash-tts-preview",
-                      contents=text,
-                      config=types.GenerateContentConfig(
-                          response_modalities=["AUDIO"],
-                          speech_config=types.SpeechConfig(
-                              voice_config=types.VoiceConfig(
-                                  prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                      voice_name=voice,
+          # ── Helper: simpan WAV ─────────────────────────────────────
+          def save_wave(path: str, pcm_chunks: list[bytes]):
+              combined = b"".join(pcm_chunks)
+              with wave.open(path, "wb") as wf:
+                  wf.setnchannels(CHANNELS)
+                  wf.setsampwidth(SAMPLE_WIDTH)
+                  wf.setframerate(SAMPLE_RATE)
+                  wf.writeframes(combined)
+              size_kb = len(combined) / 1024
+              print(f"✅ Saved: {path}  ({size_kb:.1f} KB, "
+                    f"{len(combined)/SAMPLE_RATE/SAMPLE_WIDTH:.1f}s)")
+
+          # ── Optimasi prompt per paragraf ───────────────────────────
+          def build_prompt(text: str, para_idx: int, total: int) -> str:
+              """
+              Bungkus teks dengan style direction untuk suara psikolog:
+              - Opening: lebih lambat, hangat, mengundang
+              - Tengah  : informatif, tenang, percaya diri
+              - Closing : lebih pelan, empatik, menenangkan
+              """
+              if para_idx == 0:
+                  style = (
+                      "Narrate in a calm, warm, and welcoming tone — "
+                      "like a trusted psychologist beginning a session. "
+                      "Speak slowly and reassuringly. "
+                      f"Language: {LANGUAGE}."
+                  )
+              elif para_idx == total - 1:
+                  style = (
+                      "Narrate in a gentle, compassionate, and hopeful tone — "
+                      "like a psychologist closing a session with encouragement. "
+                      "Slow down slightly on key emotional phrases. "
+                      f"Language: {LANGUAGE}."
+                  )
+              else:
+                  style = (
+                      "Narrate in a clear, knowledgeable, and authoritative yet empathetic tone — "
+                      "like a clinical psychologist explaining research findings to a patient. "
+                      "Maintain steady, confident pacing. "
+                      f"Language: {LANGUAGE}."
+                  )
+              return f"{style}\n\n{text}"
+
+          # ── Inisialisasi client ────────────────────────────────────
+          client = genai.Client(api_key=API_KEY)
+
+          # ── Generate audio per paragraf ────────────────────────────
+          all_pcm: list[bytes] = []
+          os.makedirs("output", exist_ok=True)
+
+          for idx, para in enumerate(paragraphs):
+              label = f"Paragraf {idx+1}/{len(paragraphs)}"
+              preview = textwrap.shorten(para, 70, placeholder="…")
+              print(f"\n🔊 {label}: {preview}")
+
+              prompt = build_prompt(para, idx, len(paragraphs))
+
+              for attempt in range(4):
+                  try:
+                      response = client.models.generate_content(
+                          model="gemini-3.1-flash-tts-preview",
+                          contents=prompt,
+                          config=types.GenerateContentConfig(
+                              response_modalities=["AUDIO"],
+                              speech_config=types.SpeechConfig(
+                                  voice_config=types.VoiceConfig(
+                                      prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                          voice_name=VOICE_NAME,
+                                      )
                                   )
-                              )
+                              ),
                           ),
-                      ),
-                  )
-                  data = response.candidates[0].content.parts[0].inline_data.data
-                  os.makedirs("output", exist_ok=True)
-                  save_wave("output/tts_output.wav", data)
-                  print("[TTS] ✅ Audio saved to output/tts_output.wav")
-                  break
-              except Exception as e:
-                  print(f"[TTS] ⚠️  Attempt {attempt+1} failed: {e}")
-                  if attempt == 2:
-                      raise
-          EOF
+                      )
+                      pcm = response.candidates[0].content.parts[0].inline_data.data
+                      all_pcm.append(pcm)
+                      print(f"   ✅ OK ({len(pcm)//SAMPLE_RATE//SAMPLE_WIDTH:.1f}s audio)")
+                      break
+                  except Exception as e:
+                      wait = 2 ** attempt
+                      print(f"   ⚠️  Attempt {attempt+1} failed: {e} — retry in {wait}s")
+                      time.sleep(wait)
+                      if attempt == 3:
+                          raise RuntimeError(f"Gagal generate {label} setelah 4 percobaan.") from e
 
-      # ── 5. Generate audio (multi speaker) ───────────────────────────
-      - name: Generate TTS Audio (Multi Speaker)
-        if: ${{ github.event.inputs.mode == 'multi' }}
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          python - <<'EOF'
-          import os
-          import wave
-          from google import genai
-          from google.genai import types
+              # Tambahkan jeda antar paragraf (kecuali paragraf terakhir)
+              if idx < len(paragraphs) - 1:
+                  all_pcm.append(silence_pcm(PARA_GAP))
+                  print(f"   ⏸️  Jeda {PARA_GAP}s ditambahkan")
 
-          def save_wave(filename, pcm, channels=1, rate=24000, sample_width=2):
-              with wave.open(filename, "wb") as wf:
-                  wf.setnchannels(channels)
-                  wf.setsampwidth(sample_width)
-                  wf.setframerate(rate)
-                  wf.writeframes(pcm)
+          # ── Gabung & simpan ────────────────────────────────────────
+          print("\n─" * 60)
+          out_path = f"output/psych_tts_{VOICE_NAME.lower()}.wav"
+          save_wave(out_path, all_pcm)
 
-          client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+          # Metadata file
+          total_sec = sum(len(p) for p in all_pcm) / SAMPLE_RATE / SAMPLE_WIDTH
+          with open("output/metadata.txt", "w") as mf:
+              mf.write(f"Model    : gemini-3.1-flash-tts-preview\n")
+              mf.write(f"Voice    : {VOICE_NAME}\n")
+              mf.write(f"Language : {LANGUAGE}\n")
+              mf.write(f"Paragraf : {len(paragraphs)}\n")
+              mf.write(f"Gap      : {PARA_GAP}s\n")
+              mf.write(f"Duration : {total_sec:.1f}s ({total_sec/60:.1f} menit)\n")
+              mf.write(f"Output   : {out_path}\n")
 
-          prompt = """TTS the following conversation between Alex and Maya:
-          Alex: Hei Maya, gimana kabarmu hari ini?
-          Maya: Alhamdulillah baik, Alex! Ada yang bisa aku bantu?
-          Alex: Aku ingin tahu lebih lanjut tentang Gemini TTS ini.
-          Maya: [excited] Wah, ini teknologi yang sangat keren! Kita bisa generate suara natural dengan mudah."""
+          print(f"\n🎉 Selesai! Total durasi: {total_sec:.1f}s ({total_sec/60:.1f} menit)")
+          PYEOF
 
-          print("[TTS] Model  : gemini-3.1-flash-tts-preview (multi-speaker)")
-          print("[TTS] Speakers: Alex (Fenrir), Maya (Aoede)")
-
-          for attempt in range(3):
-              try:
-                  response = client.models.generate_content(
-                      model="gemini-3.1-flash-tts-preview",
-                      contents=prompt,
-                      config=types.GenerateContentConfig(
-                          response_modalities=["AUDIO"],
-                          speech_config=types.SpeechConfig(
-                              multi_speaker_voice_config=types.MultiSpeakerVoiceConfig(
-                                  speaker_voice_configs=[
-                                      types.SpeakerVoiceConfig(
-                                          speaker="Alex",
-                                          voice_config=types.VoiceConfig(
-                                              prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                                  voice_name="Fenrir",
-                                              )
-                                          ),
-                                      ),
-                                      types.SpeakerVoiceConfig(
-                                          speaker="Maya",
-                                          voice_config=types.VoiceConfig(
-                                              prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                                  voice_name="Aoede",
-                                              )
-                                          ),
-                                      ),
-                                  ]
-                              )
-                          ),
-                      ),
-                  )
-                  data = response.candidates[0].content.parts[0].inline_data.data
-                  os.makedirs("output", exist_ok=True)
-                  save_wave("output/tts_output.wav", data)
-                  print("[TTS] ✅ Multi-speaker audio saved to output/tts_output.wav")
-                  break
-              except Exception as e:
-                  print(f"[TTS] ⚠️  Attempt {attempt+1} failed: {e}")
-                  if attempt == 2:
-                      raise
-          EOF
-
-      # ── 6. Upload artifact ───────────────────────────────────────────
+      # ── 6. Upload artifact ───────────────────────────────────────
       - name: Upload audio artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tts-audio-${{ github.run_number }}
-          path: output/tts_output.wav
-          retention-days: 7
+          name: psychology-tts-${{ github.event.inputs.voice || 'Sulafat' }}-run${{ github.run_number }}
+          path: output/
+          retention-days: 14
 
-      # ── 7. Summary ───────────────────────────────────────────────────
+      # ── 7. Job summary ───────────────────────────────────────────
       - name: Write job summary
+        if: always()
         run: |
-          echo "## 🎙️ Gemini 3.1 Flash TTS — Hasil Generate" >> $GITHUB_STEP_SUMMARY
+          echo "## 🧠 Psychology Expert TTS — Hasil Generate" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Parameter | Nilai |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Model** | \`gemini-3.1-flash-tts-preview\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Mode** | \`${{ github.event.inputs.mode || 'single' }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Voice** | \`${{ github.event.inputs.voice_name || 'Kore' }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Output** | \`output/tts_output.wav\` |" >> $GITHUB_STEP_SUMMARY
+
+          if [ -f output/metadata.txt ]; then
+            echo "### 📊 Detail Audio" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat output/metadata.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ File audio tersedia di tab **Artifacts** di atas." >> $GITHUB_STEP_SUMMARY
+          echo "### 🎤 Panduan Suara" >> $GITHUB_STEP_SUMMARY
+          echo "| Voice | Karakter | Cocok Untuk |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|----------|-------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Sulafat** | Warm | Sesi terapi, konten empatik |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Sadaltager** | Knowledgeable | Penjelasan riset, edukasi |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Gacrux** | Mature | Konten dewasa, wibawa |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Vindemiatrix** | Gentle | Trauma, konten sensitif |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📥 File WAV tersedia di tab **Artifacts** selama 14 hari." >> $GITHUB_STEP_SUMMARY
