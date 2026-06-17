@@ -1,0 +1,201 @@
+name: Gemini 3.1 Flash TTS
+
+on:
+  workflow_dispatch:
+    inputs:
+      text:
+        description: "Teks yang ingin diubah menjadi audio"
+        required: true
+        default: "Halo, selamat datang di demo Gemini TTS!"
+      voice_name:
+        description: "Nama suara (Kore, Puck, Zephyr, Aoede, Fenrir, dll.)"
+        required: false
+        default: "Kore"
+      mode:
+        description: "Mode TTS"
+        required: true
+        default: "single"
+        type: choice
+        options:
+          - single
+          - multi
+
+  push:
+    paths:
+      - "tts-input.txt"   # Otomatis trigger jika file input berubah
+
+jobs:
+  generate-tts:
+    name: Generate Speech via Gemini TTS
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout repo ────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Setup Python ─────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ── 3. Install dependencies ──────────────────────────────────────
+      - name: Install dependencies
+        run: |
+          pip install --upgrade google-genai
+
+      # ── 4. Generate audio (single speaker) ──────────────────────────
+      - name: Generate TTS Audio (Single Speaker)
+        if: ${{ github.event.inputs.mode == 'single' || github.event_name == 'push' }}
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          INPUT_TEXT: ${{ github.event.inputs.text || 'Halo dari Gemini TTS!' }}
+          VOICE_NAME: ${{ github.event.inputs.voice_name || 'Kore' }}
+        run: |
+          python - <<'EOF'
+          import os
+          import wave
+          from google import genai
+          from google.genai import types
+
+          def save_wave(filename, pcm, channels=1, rate=24000, sample_width=2):
+              with wave.open(filename, "wb") as wf:
+                  wf.setnchannels(channels)
+                  wf.setsampwidth(sample_width)
+                  wf.setframerate(rate)
+                  wf.writeframes(pcm)
+
+          client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+          text   = os.environ.get("INPUT_TEXT", "Hello from Gemini TTS!")
+          voice  = os.environ.get("VOICE_NAME", "Kore")
+
+          # Baca dari file jika push event
+          if os.path.exists("tts-input.txt"):
+              with open("tts-input.txt") as f:
+                  text = f.read().strip() or text
+
+          print(f"[TTS] Model  : gemini-3.1-flash-tts-preview")
+          print(f"[TTS] Voice  : {voice}")
+          print(f"[TTS] Text   : {text[:80]}{'...' if len(text)>80 else ''}")
+
+          for attempt in range(3):           # retry untuk 500 error sesekali
+              try:
+                  response = client.models.generate_content(
+                      model="gemini-3.1-flash-tts-preview",
+                      contents=text,
+                      config=types.GenerateContentConfig(
+                          response_modalities=["AUDIO"],
+                          speech_config=types.SpeechConfig(
+                              voice_config=types.VoiceConfig(
+                                  prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                      voice_name=voice,
+                                  )
+                              )
+                          ),
+                      ),
+                  )
+                  data = response.candidates[0].content.parts[0].inline_data.data
+                  os.makedirs("output", exist_ok=True)
+                  save_wave("output/tts_output.wav", data)
+                  print("[TTS] ✅ Audio saved to output/tts_output.wav")
+                  break
+              except Exception as e:
+                  print(f"[TTS] ⚠️  Attempt {attempt+1} failed: {e}")
+                  if attempt == 2:
+                      raise
+          EOF
+
+      # ── 5. Generate audio (multi speaker) ───────────────────────────
+      - name: Generate TTS Audio (Multi Speaker)
+        if: ${{ github.event.inputs.mode == 'multi' }}
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python - <<'EOF'
+          import os
+          import wave
+          from google import genai
+          from google.genai import types
+
+          def save_wave(filename, pcm, channels=1, rate=24000, sample_width=2):
+              with wave.open(filename, "wb") as wf:
+                  wf.setnchannels(channels)
+                  wf.setsampwidth(sample_width)
+                  wf.setframerate(rate)
+                  wf.writeframes(pcm)
+
+          client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+
+          prompt = """TTS the following conversation between Alex and Maya:
+          Alex: Hei Maya, gimana kabarmu hari ini?
+          Maya: Alhamdulillah baik, Alex! Ada yang bisa aku bantu?
+          Alex: Aku ingin tahu lebih lanjut tentang Gemini TTS ini.
+          Maya: [excited] Wah, ini teknologi yang sangat keren! Kita bisa generate suara natural dengan mudah."""
+
+          print("[TTS] Model  : gemini-3.1-flash-tts-preview (multi-speaker)")
+          print("[TTS] Speakers: Alex (Fenrir), Maya (Aoede)")
+
+          for attempt in range(3):
+              try:
+                  response = client.models.generate_content(
+                      model="gemini-3.1-flash-tts-preview",
+                      contents=prompt,
+                      config=types.GenerateContentConfig(
+                          response_modalities=["AUDIO"],
+                          speech_config=types.SpeechConfig(
+                              multi_speaker_voice_config=types.MultiSpeakerVoiceConfig(
+                                  speaker_voice_configs=[
+                                      types.SpeakerVoiceConfig(
+                                          speaker="Alex",
+                                          voice_config=types.VoiceConfig(
+                                              prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                                  voice_name="Fenrir",
+                                              )
+                                          ),
+                                      ),
+                                      types.SpeakerVoiceConfig(
+                                          speaker="Maya",
+                                          voice_config=types.VoiceConfig(
+                                              prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                                  voice_name="Aoede",
+                                              )
+                                          ),
+                                      ),
+                                  ]
+                              )
+                          ),
+                      ),
+                  )
+                  data = response.candidates[0].content.parts[0].inline_data.data
+                  os.makedirs("output", exist_ok=True)
+                  save_wave("output/tts_output.wav", data)
+                  print("[TTS] ✅ Multi-speaker audio saved to output/tts_output.wav")
+                  break
+              except Exception as e:
+                  print(f"[TTS] ⚠️  Attempt {attempt+1} failed: {e}")
+                  if attempt == 2:
+                      raise
+          EOF
+
+      # ── 6. Upload artifact ───────────────────────────────────────────
+      - name: Upload audio artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tts-audio-${{ github.run_number }}
+          path: output/tts_output.wav
+          retention-days: 7
+
+      # ── 7. Summary ───────────────────────────────────────────────────
+      - name: Write job summary
+        run: |
+          echo "## 🎙️ Gemini 3.1 Flash TTS — Hasil Generate" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Nilai |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Model** | \`gemini-3.1-flash-tts-preview\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Mode** | \`${{ github.event.inputs.mode || 'single' }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Voice** | \`${{ github.event.inputs.voice_name || 'Kore' }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Output** | \`output/tts_output.wav\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ File audio tersedia di tab **Artifacts** di atas." >> $GITHUB_STEP_SUMMARY
