@@ -32,7 +32,7 @@ jobs:
           NARRATION_TEXT: ${{ inputs.narration_text }}
         run: |
           cat << 'EOF' > generate_tts.py
-          import os, json, requests, base64, sys
+          import os, json, requests, base64, sys, time
 
           api_key = os.environ.get("GEMINI_API_KEY")
           text = os.environ.get("NARRATION_TEXT")
@@ -60,18 +60,28 @@ jobs:
 
           headers = {"Content-Type": "application/json"}
           
-          print("⏳ Sedang memproses generasi Audio TTS...")
-          response = requests.post(url, headers=headers, json=payload)
-          if response.status_code != 200:
-              print("❌ API Error:", response.text)
-              sys.exit(1)
+          max_retries = 3
+          for attempt in range(max_retries):
+              print(f"⏳ Memproses Audio TTS... (Percobaan {attempt + 1}/{max_retries})")
+              response = requests.post(url, headers=headers, json=payload)
               
-          data = response.json()
-          audio_base64 = data['candidates'][0]['content']['parts'][0]['inlineData']['data']
-          
-          with open("psychology_narration.wav", "wb") as f:
-              f.write(base64.b64decode(audio_base64))
-          print("✅ File audio berhasil dibuat: psychology_narration.wav")
+              if response.status_code == 200:
+                  data = response.json()
+                  audio_base64 = data['candidates'][0]['content']['parts'][0]['inlineData']['data']
+                  with open("psychology_narration.wav", "wb") as f:
+                      f.write(base64.b64decode(audio_base64))
+                  print("✅ File audio berhasil dibuat: psychology_narration.wav")
+                  break
+              elif response.status_code in [503, 429]:
+                  wait_time = 10 * (attempt + 1)
+                  print(f"⚠️ Server sibuk (Error {response.status_code}). Menunggu {wait_time} detik...")
+                  time.sleep(wait_time)
+              else:
+                  print("❌ API Error:", response.text)
+                  sys.exit(1)
+          else:
+              print("❌ Gagal membuat audio setelah maksimal percobaan.")
+              sys.exit(1)
           EOF
           python generate_tts.py
 
@@ -80,11 +90,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           cat << 'EOF' > analyze_audio.py
-          import os, json, requests, base64, sys
+          import os, json, requests, base64, sys, time
 
           api_key = os.environ.get("GEMINI_API_KEY")
           
-          # Membaca audio yang dihasilkan di tahap 1
           with open("psychology_narration.wav", "rb") as f:
               audio_b64 = base64.b64encode(f.read()).decode('utf-8')
 
@@ -132,27 +141,34 @@ jobs:
                   ]
               }],
               "generationConfig": {
-                  # Memaksa model untuk merespons dengan JSON yang valid agar mudah dibaca/diproses
                   "responseMimeType": "application/json"
               }
           }
 
           headers = {"Content-Type": "application/json"}
           
-          print("⏳ Sedang memproses analisis audio untuk Storyboard (Timestamps & Prompts)...")
-          response = requests.post(url, headers=headers, json=payload)
-          
-          if response.status_code != 200:
-              print("❌ API Error:", response.text)
+          max_retries = 4
+          for attempt in range(max_retries):
+              print(f"⏳ Memproses Analisis Storyboard... (Percobaan {attempt + 1}/{max_retries})")
+              response = requests.post(url, headers=headers, json=payload)
+              
+              if response.status_code == 200:
+                  data = response.json()
+                  storyboard_json = data['candidates'][0]['content']['parts'][0]['text']
+                  with open("storyboard_prompts.json", "w") as f:
+                      f.write(storyboard_json)
+                  print("✅ Storyboard JSON berhasil dibuat: storyboard_prompts.json")
+                  break
+              elif response.status_code in [503, 429]:
+                  wait_time = 15 * (attempt + 1)
+                  print(f"⚠️ Server API sibuk (Error {response.status_code}). Menunggu {wait_time} detik untuk retry...")
+                  time.sleep(wait_time)
+              else:
+                  print("❌ API Error:", response.text)
+                  sys.exit(1)
+          else:
+              print("❌ Gagal membuat storyboard setelah maksimal percobaan.")
               sys.exit(1)
-              
-          data = response.json()
-          storyboard_json = data['candidates'][0]['content']['parts'][0]['text']
-          
-          with open("storyboard_prompts.json", "w") as f:
-              f.write(storyboard_json)
-              
-          print("✅ Storyboard JSON berhasil dibuat: storyboard_prompts.json")
           EOF
           python analyze_audio.py
 
