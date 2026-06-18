@@ -26,7 +26,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Step 1 - Generate TTS Audio
+      - name: Step 1 - Generate TTS Audio (Indonesian)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           NARRATION_TEXT: ${{ inputs.narration_text }}
@@ -44,22 +44,29 @@ jobs:
           model = "gemini-3.1-flash-tts-preview"
           url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
-          # Prompt dipertegas agar AI TIDAK menambahkan basa-basi dan langsung membacakan teks
+          # Prompt diubah sepenuhnya untuk memaksa pelafalan Bahasa Indonesia yang natural
           combined_prompt = (
-              "You are a professional voiceover artist for a psychology YouTube Shorts channel. "
-              "Read the following text exactly as written. DO NOT add any introductions, confirmations, or extra words. "
-              "Keep your tone calm, analytical, empathetic, and slightly mysterious. Use dynamic pacing.\n\n"
-              f"Text to read: {text}"
+              "Anda adalah seorang pengisi suara (voiceover) profesional dari Indonesia untuk channel YouTube Shorts bertema psikologi. "
+              "Bacakan teks berikut ini TEPAT seperti yang tertulis dalam Bahasa Indonesia yang natural, fasih, dan jelas. "
+              "JANGAN menambahkan kata pengantar, konfirmasi, atau kata-kata ekstra. Langsung baca teksnya. "
+              "Gunakan nada suara yang tenang, analitis, penuh empati, dan sedikit misterius. Gunakan tempo jeda yang dinamis.\n\n"
+              f"Teks untuk dibaca: {text}"
           )
 
           payload = {
               "contents": [{"parts": [{"text": combined_prompt}]}],
               "generationConfig": {
                   "responseModalities": ["AUDIO"],
-                  "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Charon"}}}
+                  "speechConfig": {
+                      "voiceConfig": {
+                          "prebuiltVoiceConfig": {
+                              "voiceName": "Charon" 
+                          }
+                      },
+                      "languageCode": "id-ID" 
+                  }
               }
           }
-
           headers = {"Content-Type": "application/json"}
           
           max_retries = 3
@@ -69,23 +76,18 @@ jobs:
               
               if response.status_code == 200:
                   data = response.json()
-                  
-                  # Ekstraksi tipe file dan base64 data
                   inline_data = data['candidates'][0]['content']['parts'][0]['inlineData']
                   mime_type = inline_data['mimeType']
                   audio_base64 = inline_data['data']
                   
-                  # Deteksi ekstensi yang benar agar file tidak korup
                   ext = "wav"
                   if "mp3" in mime_type: ext = "mp3"
                   elif "ogg" in mime_type: ext = "ogg"
                   
                   filename = f"psychology_narration.{ext}"
-                  
                   with open(filename, "wb") as f:
                       f.write(base64.b64decode(audio_base64))
                       
-                  # Simpan nama file dan mimeType ke GitHub ENV agar bisa dipakai di Step 2
                   with open(os.environ['GITHUB_ENV'], 'a') as env_file:
                       env_file.write(f"AUDIO_FILENAME={filename}\n")
                       env_file.write(f"AUDIO_MIMETYPE={mime_type}\n")
@@ -94,18 +96,18 @@ jobs:
                   break
               elif response.status_code in [503, 429]:
                   wait_time = 10 * (attempt + 1)
-                  print(f"⚠️ Server sibuk (Error {response.status_code}). Menunggu {wait_time} detik...")
+                  print(f"⚠️ Server sibuk. Menunggu {wait_time} detik...")
                   time.sleep(wait_time)
               else:
                   print("❌ API Error:", response.text)
                   sys.exit(1)
           else:
-              print("❌ Gagal membuat audio setelah maksimal percobaan.")
+              print("❌ Gagal membuat audio.")
               sys.exit(1)
           EOF
           python generate_tts.py
 
-      - name: Step 2 - Analyze Audio & Generate Storyboard
+      - name: Step 2 - Analyze Audio & Generate Storyboard (Stable Model)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -113,15 +115,14 @@ jobs:
           import os, json, requests, base64, sys, time
 
           api_key = os.environ.get("GEMINI_API_KEY")
-          
-          # Mengambil nama file dari Step 1 secara dinamis
           filename = os.environ.get("AUDIO_FILENAME", "psychology_narration.wav")
           mime_type = os.environ.get("AUDIO_MIMETYPE", "audio/wav")
           
           with open(filename, "rb") as f:
               audio_b64 = base64.b64encode(f.read()).decode('utf-8')
 
-          model = "gemini-3.5-flash"
+          # MENGGUNAKAN MODEL YANG LEBIH STABIL UNTUK MENGHINDARI ERROR 503 & 429
+          model = "gemini-2.0-flash" 
           url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
           prompt = """You are a professional storyboard director for a psychology YouTube Shorts channel.
@@ -200,7 +201,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: psychology-shorts-assets
-          # Menggunakan wildcard (*) agar file apapun entah itu .mp3, .ogg, atau .wav otomatis terupload
           path: |
             psychology_narration.*
             storyboard_prompts.json
