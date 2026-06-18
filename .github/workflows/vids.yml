@@ -1,4 +1,3 @@
-
 name: Generate Psychology Shorts TTS
 
 on:
@@ -29,7 +28,6 @@ jobs:
 
       - name: Run TTS Generation Script
         env:
-          # Pastikan Anda sudah menambahkan GEMINI_API_KEY di Settings > Secrets and variables > Actions
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           NARRATION_TEXT: ${{ inputs.narration_text }}
         run: |
@@ -47,33 +45,28 @@ jobs:
               print("❌ Error: GEMINI_API_KEY belum disetel di GitHub Secrets.")
               sys.exit(1)
 
-          # Endpoint model sesuai permintaan
           model = "gemini-3.1-flash-tts-preview"
           url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
-          # Prompt dioptimalkan untuk hook konten viral dan psikologi
-          system_instruction = (
-              "You are a professional voiceover artist for a psychology YouTube Shorts channel. "
-              "Your tone is calm, analytical, empathetic, and slightly mysterious to retain high audience engagement. "
-              "Use dynamic pacing: start with a strong, intriguing hook, maintain a steady flow during the explanation, "
-              "and end with a thought-provoking pause. Do not include sound effects, only the vocal narration."
+          # Menggabungkan instruksi pengarahan suara langsung ke dalam prompt utama
+          combined_prompt = (
+              "Please read the following text. Act as a professional voiceover artist for a psychology YouTube Shorts channel. "
+              "Keep your tone calm, analytical, empathetic, and slightly mysterious. "
+              "Use dynamic pacing. "
+              "Here is the text to read:\n\n"
+              f"{text}"
           )
 
+          # Parameter systemInstruction dihapus dan dipindah ke dalam contents utama
           payload = {
               "contents": [{
-                  "parts": [{"text": text}]
+                  "parts": [{"text": combined_prompt}]
               }],
-              "systemInstruction": {
-                  "parts": [{"text": system_instruction}]
-              },
               "generationConfig": {
-                  # Memaksa model untuk mengembalikan output berupa audio
                   "responseModalities": ["AUDIO"],
                   "speechConfig": {
                       "voiceConfig": {
                           "prebuiltVoiceConfig": {
-                              # Opsi suara Gemini: Aoede (calm female), Charon (deep male), Puck (energetic)
-                              # Charon atau Aoede sangat cocok untuk tema psikologi.
                               "voiceName": "Charon" 
                           }
                       }
@@ -89,7 +82,6 @@ jobs:
               response.raise_for_status()
               data = response.json()
               
-              # Ekstraksi base64 audio dari response JSON Gemini
               audio_base64 = data['candidates'][0]['content']['parts'][0]['inlineData']['data']
               audio_bytes = base64.b64decode(audio_base64)
               
@@ -105,7 +97,7 @@ jobs:
                   print("Detail Error:", response.text)
               sys.exit(1)
           except KeyError as e:
-              print(f"❌ Gagal parsing struktur JSON dari API. Model mungkin tidak merespons dengan audio.")
+              print(f"❌ Gagal parsing struktur JSON dari API.")
               print("Response mentah:", json.dumps(data, indent=2))
               sys.exit(1)
           EOF
