@@ -26,7 +26,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Step 1 - Generate TTS Audio (Indonesian)
+      - name: Step 1 - Generate TTS Audio
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           NARRATION_TEXT: ${{ inputs.narration_text }}
@@ -44,13 +44,11 @@ jobs:
           model = "gemini-3.1-flash-tts-preview"
           url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
-          # Prompt diubah sepenuhnya untuk memaksa pelafalan Bahasa Indonesia yang natural
           combined_prompt = (
-              "Anda adalah seorang pengisi suara (voiceover) profesional dari Indonesia untuk channel YouTube Shorts bertema psikologi. "
-              "Bacakan teks berikut ini TEPAT seperti yang tertulis dalam Bahasa Indonesia yang natural, fasih, dan jelas. "
-              "JANGAN menambahkan kata pengantar, konfirmasi, atau kata-kata ekstra. Langsung baca teksnya. "
-              "Gunakan nada suara yang tenang, analitis, penuh empati, dan sedikit misterius. Gunakan tempo jeda yang dinamis.\n\n"
-              f"Teks untuk dibaca: {text}"
+              "You are a professional voiceover artist for a psychology YouTube Shorts channel. "
+              "Read the following text exactly as written. DO NOT add any introductions, confirmations, or extra words. "
+              "Keep your tone calm, analytical, empathetic, and slightly mysterious. Use dynamic pacing.\n\n"
+              f"Text to read: {text}"
           )
 
           payload = {
@@ -107,7 +105,7 @@ jobs:
           EOF
           python generate_tts.py
 
-      - name: Step 2 - Analyze Audio & Generate Storyboard (Stable Model)
+      - name: Step 2 - Analyze Audio & Generate Storyboard
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
