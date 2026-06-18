@@ -1,1 +1,120 @@
 
+name: Generate Psychology Shorts TTS
+
+on:
+  workflow_dispatch:
+    inputs:
+      narration_text:
+        description: 'Teks narasi untuk Shorts (Contoh: "Tahukah kamu, secara psikologis seseorang yang sering...")'
+        required: true
+        type: string
+
+jobs:
+  generate-audio:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run TTS Generation Script
+        env:
+          # Pastikan Anda sudah menambahkan GEMINI_API_KEY di Settings > Secrets and variables > Actions
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NARRATION_TEXT: ${{ inputs.narration_text }}
+        run: |
+          cat << 'EOF' > generate_tts.py
+          import os
+          import json
+          import requests
+          import base64
+          import sys
+
+          api_key = os.environ.get("GEMINI_API_KEY")
+          text = os.environ.get("NARRATION_TEXT")
+          
+          if not api_key:
+              print("❌ Error: GEMINI_API_KEY belum disetel di GitHub Secrets.")
+              sys.exit(1)
+
+          # Endpoint model sesuai permintaan
+          model = "gemini-3.1-flash-tts-preview"
+          url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+
+          # Prompt dioptimalkan untuk hook konten viral dan psikologi
+          system_instruction = (
+              "You are a professional voiceover artist for a psychology YouTube Shorts channel. "
+              "Your tone is calm, analytical, empathetic, and slightly mysterious to retain high audience engagement. "
+              "Use dynamic pacing: start with a strong, intriguing hook, maintain a steady flow during the explanation, "
+              "and end with a thought-provoking pause. Do not include sound effects, only the vocal narration."
+          )
+
+          payload = {
+              "contents": [{
+                  "parts": [{"text": text}]
+              }],
+              "systemInstruction": {
+                  "parts": [{"text": system_instruction}]
+              },
+              "generationConfig": {
+                  # Memaksa model untuk mengembalikan output berupa audio
+                  "responseModalities": ["AUDIO"],
+                  "speechConfig": {
+                      "voiceConfig": {
+                          "prebuiltVoiceConfig": {
+                              # Opsi suara Gemini: Aoede (calm female), Charon (deep male), Puck (energetic)
+                              # Charon atau Aoede sangat cocok untuk tema psikologi.
+                              "voiceName": "Charon" 
+                          }
+                      }
+                  }
+              }
+          }
+
+          headers = {"Content-Type": "application/json"}
+          
+          try:
+              print("⏳ Sedang memproses generasi TTS...")
+              response = requests.post(url, headers=headers, json=payload)
+              response.raise_for_status()
+              data = response.json()
+              
+              # Ekstraksi base64 audio dari response JSON Gemini
+              audio_base64 = data['candidates'][0]['content']['parts'][0]['inlineData']['data']
+              audio_bytes = base64.b64decode(audio_base64)
+              
+              output_filename = "psychology_narration.wav"
+              with open(output_filename, "wb") as f:
+                  f.write(audio_bytes)
+                  
+              print(f"✅ Berhasil! File audio disimpan sebagai {output_filename}")
+              
+          except requests.exceptions.RequestException as e:
+              print(f"❌ API Request Gagal: {e}")
+              if response.text:
+                  print("Detail Error:", response.text)
+              sys.exit(1)
+          except KeyError as e:
+              print(f"❌ Gagal parsing struktur JSON dari API. Model mungkin tidak merespons dengan audio.")
+              print("Response mentah:", json.dumps(data, indent=2))
+              sys.exit(1)
+          EOF
+          
+          python generate_tts.py
+
+      - name: Upload Audio Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tts-audio-result
+          path: psychology_narration.wav
+          retention-days: 5
