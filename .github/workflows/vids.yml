@@ -1,15 +1,15 @@
-name: Generate Psychology Shorts TTS
+name: Generate Psychology Shorts TTS & Storyboard
 
 on:
   workflow_dispatch:
     inputs:
       narration_text:
-        description: 'Teks narasi untuk Shorts (Contoh: "Tahukah kamu, secara psikologis seseorang yang sering...")'
+        description: 'Teks narasi untuk Shorts'
         required: true
         type: string
 
 jobs:
-  generate-audio:
+  generate-audio-and-visuals:
     runs-on: ubuntu-latest
     
     steps:
@@ -26,87 +26,141 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run TTS Generation Script
+      - name: Step 1 - Generate TTS Audio (Gemini 3.1 Flash TTS Preview)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           NARRATION_TEXT: ${{ inputs.narration_text }}
         run: |
           cat << 'EOF' > generate_tts.py
-          import os
-          import json
-          import requests
-          import base64
-          import sys
+          import os, json, requests, base64, sys
 
           api_key = os.environ.get("GEMINI_API_KEY")
           text = os.environ.get("NARRATION_TEXT")
           
           if not api_key:
-              print("❌ Error: GEMINI_API_KEY belum disetel di GitHub Secrets.")
+              print("❌ Error: GEMINI_API_KEY belum disetel.")
               sys.exit(1)
 
           model = "gemini-3.1-flash-tts-preview"
           url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
-          # Menggabungkan instruksi pengarahan suara langsung ke dalam prompt utama
           combined_prompt = (
               "Please read the following text. Act as a professional voiceover artist for a psychology YouTube Shorts channel. "
-              "Keep your tone calm, analytical, empathetic, and slightly mysterious. "
-              "Use dynamic pacing. "
-              "Here is the text to read:\n\n"
+              "Keep your tone calm, analytical, empathetic, and slightly mysterious. Use dynamic pacing.\n\n"
               f"{text}"
           )
 
-          # Parameter systemInstruction dihapus dan dipindah ke dalam contents utama
           payload = {
-              "contents": [{
-                  "parts": [{"text": combined_prompt}]
-              }],
+              "contents": [{"parts": [{"text": combined_prompt}]}],
               "generationConfig": {
                   "responseModalities": ["AUDIO"],
-                  "speechConfig": {
-                      "voiceConfig": {
-                          "prebuiltVoiceConfig": {
-                              "voiceName": "Charon" 
-                          }
-                      }
-                  }
+                  "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Charon"}}}
               }
           }
 
           headers = {"Content-Type": "application/json"}
           
-          try:
-              print("⏳ Sedang memproses generasi TTS...")
-              response = requests.post(url, headers=headers, json=payload)
-              response.raise_for_status()
-              data = response.json()
-              
-              audio_base64 = data['candidates'][0]['content']['parts'][0]['inlineData']['data']
-              audio_bytes = base64.b64decode(audio_base64)
-              
-              output_filename = "psychology_narration.wav"
-              with open(output_filename, "wb") as f:
-                  f.write(audio_bytes)
-                  
-              print(f"✅ Berhasil! File audio disimpan sebagai {output_filename}")
-              
-          except requests.exceptions.RequestException as e:
-              print(f"❌ API Request Gagal: {e}")
-              if response.text:
-                  print("Detail Error:", response.text)
+          print("⏳ Sedang memproses generasi Audio TTS...")
+          response = requests.post(url, headers=headers, json=payload)
+          if response.status_code != 200:
+              print("❌ API Error:", response.text)
               sys.exit(1)
-          except KeyError as e:
-              print(f"❌ Gagal parsing struktur JSON dari API.")
-              print("Response mentah:", json.dumps(data, indent=2))
-              sys.exit(1)
-          EOF
+              
+          data = response.json()
+          audio_base64 = data['candidates'][0]['content']['parts'][0]['inlineData']['data']
           
+          with open("psychology_narration.wav", "wb") as f:
+              f.write(base64.b64decode(audio_base64))
+          print("✅ File audio berhasil dibuat: psychology_narration.wav")
+          EOF
           python generate_tts.py
 
-      - name: Upload Audio Artifact
+      - name: Step 2 - Analyze Audio & Generate Storyboard (Gemini 3.5 Flash)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          cat << 'EOF' > analyze_audio.py
+          import os, json, requests, base64, sys
+
+          api_key = os.environ.get("GEMINI_API_KEY")
+          
+          # Membaca audio yang dihasilkan di tahap 1
+          with open("psychology_narration.wav", "rb") as f:
+              audio_b64 = base64.b64encode(f.read()).decode('utf-8')
+
+          model = "gemini-3.5-flash"
+          url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+
+          prompt = """You are a professional storyboard director for a psychology YouTube Shorts channel.
+          Your job is to analyze the provided audio and split the narration into as many visual scenes as necessary.
+          Your job is NOT to summarize.
+
+          Rules:
+          Every time there is:
+          - new idea
+          - emotional shift
+          - visual object
+          - action
+          - metaphor
+          - comparison
+          - dramatic pause
+          - psychological emphasis
+          - location change
+          - perspective change
+          create NEW IMAGE.
+
+          Never merge scenes.
+          If one paragraph needs 18 images, produce 18.
+          If one sentence needs 4 images, produce 4.
+          Quality is more important than quantity. There is NO LIMIT.
+          
+          Visual Style constraints: 
+          All image_prompts MUST be designed to generate highly detailed 2D illustrations. Use terms like "2D flat illustration, anime style, flat colors, psychology vector art, highly detailed 2D".
+
+          You MUST return the output ONLY as a JSON Array format with the following keys for each object:
+          - "start_time" (e.g., "00:00.0")
+          - "end_time" (e.g., "00:02.5")
+          - "narration_text" (the exact words spoken in this segment)
+          - "image_prompt" (the highly detailed prompt for the 2D AI image generator)
+          """
+
+          payload = {
+              "contents": [{
+                  "parts": [
+                      {"text": prompt},
+                      {"inlineData": {"mimeType": "audio/wav", "data": audio_b64}}
+                  ]
+              }],
+              "generationConfig": {
+                  # Memaksa model untuk merespons dengan JSON yang valid agar mudah dibaca/diproses
+                  "responseMimeType": "application/json"
+              }
+          }
+
+          headers = {"Content-Type": "application/json"}
+          
+          print("⏳ Sedang memproses analisis audio untuk Storyboard (Timestamps & Prompts)...")
+          response = requests.post(url, headers=headers, json=payload)
+          
+          if response.status_code != 200:
+              print("❌ API Error:", response.text)
+              sys.exit(1)
+              
+          data = response.json()
+          storyboard_json = data['candidates'][0]['content']['parts'][0]['text']
+          
+          with open("storyboard_prompts.json", "w") as f:
+              f.write(storyboard_json)
+              
+          print("✅ Storyboard JSON berhasil dibuat: storyboard_prompts.json")
+          EOF
+          python analyze_audio.py
+
+      - name: Upload Audio and Storyboard Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: tts-audio-result
-          path: psychology_narration.wav
+          name: psychology-shorts-assets
+          path: |
+            psychology_narration.wav
+            storyboard_prompts.json
           retention-days: 5
