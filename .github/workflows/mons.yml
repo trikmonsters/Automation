@@ -51,7 +51,7 @@ jobs:
               await page.goto("https://ytshortsdl.io/", { waitUntil: "networkidle", timeout: 60000 });
 
               const input = page.locator("input[type='text']").first();
-              await input.waitFor({ state: "visible" });
+              await input.waitFor({ state: "visible", timeout: 20000 });
               await input.fill(process.env.SHORT_URL);
               await input.press("Enter");
 
@@ -73,7 +73,7 @@ jobs:
               console.error(`Attempt ${attempt} failed: ${err.message}`);
               await context.close();
               if (attempt === MAX_RETRIES) process.exit(1);
-              await new Promise(r => setTimeout(r, 10000));
+              await new Promise(r => setTimeout(r, 15000));
             }
           }
           EOF
@@ -95,8 +95,8 @@ jobs:
                       return urllib.request.urlopen(request)
                   except urllib.error.HTTPError as e:
                       if e.code in [503, 500] and i < retries - 1:
-                          wait = (i + 1) * 15
-                          print(f"Gemini sibuk ({e.code}), mencoba lagi dalam {wait}s...")
+                          wait = (i + 1) * 20
+                          print(f"Gemini API Error {e.code}, retry {i+1} in {wait}s...")
                           time.sleep(wait)
                           continue
                       raise e
@@ -104,7 +104,7 @@ jobs:
           api_key = os.environ["GEMINI_API_KEY"]
           video_file = os.environ["VIDEO_FILE"]
 
-          # Upload Video
+          # 1. Upload Video
           with open(video_file, "rb") as f: video_bytes = f.read()
           init_req = urllib.request.Request(
               f"https://generativelanguage.googleapis.com/upload/v1beta/files?key={api_key}",
@@ -115,15 +115,15 @@ jobs:
           upload_url = call_api_with_retry(init_req).headers["X-Goog-Upload-URL"]
           call_api_with_retry(urllib.request.Request(upload_url, data=video_bytes, headers={"Content-Length": str(len(video_bytes)), "X-Goog-Upload-Offset": "0", "X-Goog-Upload-Command": "upload, finalize"}, method="POST"))
           
-          # Tunggu ACTIVE
+          # 2. Polling ACTIVE
           file_name = json.loads(call_api_with_retry(urllib.request.Request(upload_url, headers={"X-Goog-Upload-Command": "query"}, method="POST")).read().decode())["file"]["name"]
           while True:
               state = json.loads(urllib.request.urlopen(f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key}").read().decode()).get("state")
               if state == "ACTIVE": break
-              time.sleep(5)
+              time.sleep(10)
 
-          # Generate
-          prompt = "Buatkan metadata (Judul [Song]-[Artist], Deskripsi singkat, 4 Tag) dalam 3 baris saja."
+          # 3. Generate Metadata
+          prompt = "Buatkan metadata: Baris 1: [Judul] - [Artist]. Baris 2: Deskripsi singkat. Baris 3: 4 Hashtag. Hanya berikan 3 baris tersebut."
           gen_req = urllib.request.Request(
               f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}",
               data=json.dumps({"contents": [{"parts": [{"file_data": {"mime_type": "video/mp4", "file_uri": f"https://generativelanguage.googleapis.com/v1beta/{file_name}"}}, {"text": prompt}]}]}).encode(),
@@ -137,4 +137,53 @@ jobs:
               env_file.write(f"TIKTOK_CAPTION<<EOF_CAPTION\n{output}\nEOF_CAPTION\n")
           PYEOF
 
-      # Tambahkan step upload release dan buffer seperti semula di sini...
+      - name: Delete old release
+        if: ${{ github.event.inputs.upload_tiktok == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases --jq '.[] | select(.tag_name == "mons") | .id' 2>/dev/null || echo "")
+          if [ -n "$RELEASE_ID" ]; then
+            gh api -X DELETE repos/${{ github.repository }}/releases/$RELEASE_ID
+            gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/mons || true
+          fi
+
+      - name: Upload video to GitHub Release
+        if: ${{ github.event.inputs.upload_tiktok == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create mons --title "Mons Video" --notes "Temp" "${{ env.OUTPUT_FILE }}"
+
+      - name: Get video URL
+        if: ${{ github.event.inputs.upload_tiktok == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sleep 10
+          echo "VIDEO_URL=$(gh api repos/${{ github.repository }}/releases/tags/mons --jq '.assets[0].browser_download_url')" >> $GITHUB_ENV
+
+      - name: Upload TikTok via Buffer
+        if: ${{ github.event.inputs.upload_tiktok == 'true' }}
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_CHANNEL_ID: "6a2f0cb138b557934596594b"
+          VIDEO_URL: ${{ env.VIDEO_URL }}
+        run: |
+          python3 - <<'PYEOF'
+          import os, json, urllib.request
+          from datetime import datetime, timezone, timedelta
+          
+          due_at = (datetime.now(timezone.utc) + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+          query = f"""mutation {{ createPost(input: {{
+              text: {json.dumps(os.environ['TIKTOK_CAPTION'])},
+              channelId: {json.dumps(os.environ['BUFFER_CHANNEL_ID'])},
+              schedulingType: automatic,
+              mode: customScheduled,
+              dueAt: "{due_at}",
+              assets: [{{ video: {{ url: "{os.environ['VIDEO_URL']}" }} }}]
+          }}) {{ ... on PostActionSuccess {{ post {{ id }} }} }} }}"""
+          
+          req = urllib.request.Request("https://api.buffer.com/graphql", data=json.dumps({"query": query}).encode(), headers={"Content-Type": "application/json", "Authorization": f"Bearer {os.environ['BUFFER_API_KEY']}"})
+          print(urllib.request.urlopen(req).read().decode())
+          PYEOF
