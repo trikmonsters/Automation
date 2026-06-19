@@ -22,8 +22,7 @@ jobs:
           python-version: '3.10'
 
       - name: Install Dependencies
-        run: |
-          pip install requests
+        run: pip install requests
 
       - name: Step 1 - Generate TTS Audio
         env:
@@ -32,7 +31,7 @@ jobs:
         run: |
           python -c "import os, json, requests, base64; 
           url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=' + os.environ['GEMINI_API_KEY'];
-          payload = {'contents': [{'parts': [{'text': 'Read this in Indonesian natural voice: ' + os.environ['NARRATION_TEXT']}]}], 'generationConfig': {'responseModalities': ['AUDIO'], 'speechConfig': {'voiceConfig': {'prebuiltVoiceConfig': {'voiceName': 'Charon'}}, 'languageCode': 'id-ID'}}};
+          payload = {'contents': [{'parts': [{'text': 'Read this in Indonesian: ' + os.environ['NARRATION_TEXT']}]}], 'generationConfig': {'responseModalities': ['AUDIO'], 'speechConfig': {'voiceConfig': {'prebuiltVoiceConfig': {'voiceName': 'Charon'}}, 'languageCode': 'id-ID'}}};
           resp = requests.post(url, json=payload).json();
           with open('audio.wav', 'wb') as f: f.write(base64.b64decode(resp['candidates'][0]['content']['parts'][0]['inlineData']['data']))"
 
@@ -49,7 +48,6 @@ jobs:
           url = "https://openrouter.ai/api/v1/chat/completions"
           headers = {"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}", "Content-Type": "application/json"}
           
-          # Payload dengan dua opsi (input_audio dan fallback image_url)
           payload = {
               "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
               "messages": [
@@ -66,8 +64,7 @@ jobs:
           response = requests.post(url, headers=headers, json=payload)
           data = response.json()
 
-          # Fallback jika input_audio ditolak
-          if 'error' in data:
+          if 'choices' not in data:
               print("⚠️ input_audio gagal, mencoba fallback image_url...")
               payload["messages"][0]["content"][1] = {"type": "image_url", "image_url": {"url": f"data:audio/wav;base64,{audio_b64}"}}
               response = requests.post(url, headers=headers, json=payload)
@@ -77,10 +74,14 @@ jobs:
               print("❌ API Error:", json.dumps(data, indent=2))
               exit(1)
 
-          content = data['choices'][0]['message']['content'].replace('```json', '').replace('
-          ```', '')
+          content = data['choices'][0]['message']['content']
+          # Pembersihan string yang aman
+          content = content.replace('```json', '').replace('
+          ```', '').strip()
+          
           with open("storyboard_prompts.json", "w") as f:
               f.write(content)
+          print("✅ Storyboard JSON berhasil dibuat.")
           EOF
           python analyze.py
 
