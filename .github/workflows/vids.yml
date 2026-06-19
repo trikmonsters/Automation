@@ -78,7 +78,7 @@ jobs:
               exit(1)
 
           content = data['choices'][0]['message']['content'].replace('```json', '').replace('
-```', '')
+          ```', '')
           with open("storyboard_prompts.json", "w") as f:
               f.write(content)
           EOF
