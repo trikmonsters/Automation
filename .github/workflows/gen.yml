@@ -1,10 +1,10 @@
 name: Playwright Image Generator Pipeline
 
 on:
-  workflow_dispatch: # Jalankan manual dari tab Actions
+  workflow_dispatch:
 
 permissions:
-  contents: write # Wajib untuk membuat Release
+  contents: write
 
 jobs:
   generate:
@@ -33,34 +33,25 @@ jobs:
           test('Generate and save image', async ({ page }) => {
             await page.goto('https://freegen.app/');
             
-            // Pilih aspect ratio 9:16
+            // 1. Pilih aspect ratio 9:16
             await page.selectOption('#aspectRatioSelect', '9:16');
             
-            // Masukkan prompt
-            await page.fill('#prompt', 'A clean modern flat vector illustration of a professional psychologist standing confidently in a cozy therapy office. A friendly young male psychologist with fair skin, short neatly combed brown hair, large round glasses, and a warm smile. He wears a tailored navy blue business suit with subtle shading, a white dress shirt, a patterned blue tie featuring tiny brain icons, brown leather dress shoes, and a matching pocket square.
-
-            The psychologist is standing in the center of the composition, holding a clipboard in his left hand while presenting with his right hand. Above his open palm is a simple monochrome line-art icon of a patient sitting on a therapy couch, symbolizing psychological counseling.
+            // 2. Masukkan Prompt Detail
+            const prompt = 'A professional psychologist illustration, clean flat vector style. A friendly young male, fair skin, short brown hair, round glasses, warm smile. Wearing a tailored navy blue suit, white shirt, blue brain-icon tie, pocket square. Standing center, holding a clipboard in left hand, right hand presenting an open palm. Above his palm floats a simple monochrome line-art icon of a patient on a therapy couch. Minimalist office background with thin gray outlines: bookshelf, framed certificate, armchair, and indoor plant. Soft muted colors, clean composition, educational poster aesthetic. Proportions are slightly cartoonish with large head, expressive eyes, elegant posture. At the top, bold uppercase text: "PROFESSIONAL PSYCHOLOGIST". High readability, white background, vector artwork, professional infographic style.';
             
-            The background is a minimalist psychotherapy office drawn with thin gray outlines: a tall bookshelf filled with books on the left, a framed psychology certificate on the wall, a comfortable armchair behind him, and a potted indoor plant on the right. The environment is clean, modern, organized, and calming.
-            
-            The illustration uses a minimal flat design, thin black outlines, soft muted colors, subtle shadows, professional infographic style, vector artwork, white background, clean composition, educational poster aesthetic, friendly corporate illustration, high readability, and simple geometric shapes.
-            
-            Character proportions are slightly cartoonish with a relatively large head, expressive eyes, slim body, and elegant posture. The suit is the only dominant colored object, while the background remains light gray line art to emphasize the character.
-            
-            At the top of the image, large bold uppercase typography reads:
-            "PROFESSIONAL PSYCHOLOGIST"');
+            await page.fill('#prompt', prompt);
             await page.keyboard.press('Enter');
             
-            // Tunggu container hasil muncul
+            // 3. Tunggu hasil (Timeout 90 detik untuk proses AI)
             const imageContainer = page.locator('#imageContainer');
             await expect(imageContainer).toBeVisible({ timeout: 90000 });
             
-            // Ambil data gambar (Base64)
+            // 4. Proses Download
             const generatedImage = imageContainer.locator('img');
             const src = await generatedImage.getAttribute('src');
             
-            // Konversi Base64 ke buffer dan simpan
-            const base64Data = src.replace(/^data:image\/jpeg;base64,/, "");
+            // Bersihkan format Base64 dan simpan
+            const base64Data = src.replace(/^data:image\/[a-z]+;base64,/, "");
             fs.writeFileSync('./hasil-gambar.jpg', base64Data, 'base64');
           });
           EOF
@@ -72,8 +63,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: success()
         with:
-          tag_name: "hasil-${{ github.run_id }}"
-          name: "Hasil Generasi AI - Run ${{ github.run_id }}"
+          tag_name: "psikolog-${{ github.run_id }}"
+          name: "Ilustrasi Psikolog - Run ${{ github.run_id }}"
           files: ./hasil-gambar.jpg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
