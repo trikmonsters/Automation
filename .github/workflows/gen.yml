@@ -37,7 +37,18 @@ jobs:
             await page.selectOption('#aspectRatioSelect', '9:16');
             
             // Masukkan prompt
-            await page.fill('#prompt', 'A majestic mountain landscape, high resolution');
+            await page.fill('#prompt', 'A clean modern flat vector illustration of a professional psychologist standing confidently in a cozy therapy office. A friendly young male psychologist with fair skin, short neatly combed brown hair, large round glasses, and a warm smile. He wears a tailored navy blue business suit with subtle shading, a white dress shirt, a patterned blue tie featuring tiny brain icons, brown leather dress shoes, and a matching pocket square.
+
+            The psychologist is standing in the center of the composition, holding a clipboard in his left hand while presenting with his right hand. Above his open palm is a simple monochrome line-art icon of a patient sitting on a therapy couch, symbolizing psychological counseling.
+            
+            The background is a minimalist psychotherapy office drawn with thin gray outlines: a tall bookshelf filled with books on the left, a framed psychology certificate on the wall, a comfortable armchair behind him, and a potted indoor plant on the right. The environment is clean, modern, organized, and calming.
+            
+            The illustration uses a minimal flat design, thin black outlines, soft muted colors, subtle shadows, professional infographic style, vector artwork, white background, clean composition, educational poster aesthetic, friendly corporate illustration, high readability, and simple geometric shapes.
+            
+            Character proportions are slightly cartoonish with a relatively large head, expressive eyes, slim body, and elegant posture. The suit is the only dominant colored object, while the background remains light gray line art to emphasize the character.
+            
+            At the top of the image, large bold uppercase typography reads:
+            "PROFESSIONAL PSYCHOLOGIST"');
             await page.keyboard.press('Enter');
             
             // Tunggu container hasil muncul
