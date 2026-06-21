@@ -1,0 +1,59 @@
+name: Playwright Image Generator
+on:
+  workflow_dispatch: # Bisa dijalankan manual dari tab Actions
+
+permissions:
+  contents: write # Diperlukan untuk membuat Release
+
+jobs:
+  generate-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          npm init -y
+          npm install @playwright/test playwright
+          npx playwright install --with-deps
+
+      - name: Create Test Script
+        run: |
+          cat <<EOF > generate.spec.js
+          const { test } = require('@playwright/test');
+          const fs = require('fs');
+
+          test('Generate and download image', async ({ page }) => {
+            await page.goto('https://freegen.app/');
+            await page.selectOption('#aspectRatioSelect', '9:16');
+            await page.fill('#prompt', 'A futuristic city, cinematic lighting, 8k');
+            await page.keyboard.press('Enter');
+            
+            // Tunggu elemen hasil muncul (sesuaikan selector jika perlu)
+            const resultSelector = '.result-image'; 
+            await page.waitForSelector(resultSelector, { timeout: 60000 });
+            
+            // Download file
+            const downloadPromise = page.waitForEvent('download');
+            await page.click(resultSelector); 
+            const download = await downloadPromise;
+            await download.saveAs('./hasil-gambar.png');
+          });
+          EOF
+
+      - name: Run Playwright
+        run: npx playwright test generate.spec.js
+
+      - name: Create Release and Upload
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "generated-${{ github.run_id }}"
+          name: "Hasil Generasi Gambar ${{ github.run_id }}"
+          files: ./hasil-gambar.png
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
