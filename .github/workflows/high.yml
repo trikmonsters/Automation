@@ -1,0 +1,185 @@
+name: HighReach Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      youtube_url:
+        description: "YouTube Shorts URL"
+        required: true
+
+jobs:
+  downloader:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Playwright
+        run: |
+          npm init -y
+          npm i playwright
+          npx playwright install chromium --with-deps
+
+      - name: Run Playwright
+        env:
+          SHORT_URL: ${{ github.event.inputs.youtube_url }}
+        run: |
+          cat > script.mjs <<'EOF'
+          import fs from "fs";
+          import { chromium } from "playwright";
+
+          const MAX_RETRIES = 3;
+
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+          const browser = await chromium.launch({
+            headless: true,
+            args: [
+              "--no-sandbox",
+              "--disable-dev-shm-usage"
+            ]
+          });
+
+          for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+
+            console.log(`===== Attempt ${attempt}/${MAX_RETRIES} =====`);
+
+            const context = await browser.newContext({
+              acceptDownloads: true,
+              viewport: {
+                width: 1440,
+                height: 900
+              },
+              userAgent:
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136 Safari/537.36"
+            });
+
+            const page = await context.newPage();
+
+            try {
+
+              console.log("Opening website...");
+
+              await page.goto(
+                "https://highreach.ai/tools/youtube-shorts-downloader",
+                {
+                  waitUntil: "networkidle",
+                  timeout: 90000
+                }
+              );
+
+              console.log("Finding input...");
+
+              const input = page.locator("input").first();
+
+              await input.waitFor({
+                timeout: 30000
+              });
+
+              await input.fill(process.env.SHORT_URL);
+
+              await input.press("Enter");
+
+              console.log("Waiting processing...");
+
+              await sleep(8000);
+
+              console.log("Looking for mp4 result...");
+
+              const candidates = page.locator(
+                "button, a"
+              );
+
+              const total = await candidates.count();
+
+              let clicked = false;
+
+              for (let i = 0; i < total; i++) {
+
+                const el = candidates.nth(i);
+
+                const text = (await el.innerText().catch(()=>"")).toLowerCase();
+
+                console.log(text);
+
+                if (
+                  text.includes("mp4")
+                ) {
+                  console.log("Clicking:", text);
+
+                  await Promise.all([
+                    page.waitForLoadState("networkidle").catch(()=>{}),
+                    el.click({ force: true })
+                  ]);
+
+                  clicked = true;
+                  break;
+                }
+
+              }
+
+              if (!clicked)
+                throw new Error("No MP4 option found.");
+
+              console.log("Waiting redirect...");
+
+              await page.waitForTimeout(5000);
+
+              console.log("Current URL:");
+              console.log(page.url());
+
+              fs.appendFileSync(
+                process.env.GITHUB_ENV,
+                `REDIRECT_URL=${page.url()}\n`
+              );
+
+              await page.screenshot({
+                path: "success.png",
+                fullPage: true
+              });
+
+              await context.close();
+              await browser.close();
+
+              process.exit(0);
+
+            } catch (err) {
+
+              console.log(err);
+
+              await page.screenshot({
+                path: `error-${attempt}.png`,
+                fullPage: true
+              });
+
+              await context.close();
+
+              if (attempt === MAX_RETRIES) {
+                await browser.close();
+                process.exit(1);
+              }
+
+              await sleep(10000);
+            }
+          }
+
+          EOF
+
+          node script.mjs
+
+      - name: Show Redirect URL
+        run: |
+          echo "$REDIRECT_URL"
+
+      - name: Upload Screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: |
+            *.png
