@@ -1,15 +1,17 @@
-name: Playwright Image Generator
+name: Playwright Image Generator Pipeline
+
 on:
-  workflow_dispatch: # Bisa dijalankan manual dari tab Actions
+  workflow_dispatch: # Jalankan manual dari tab Actions
 
 permissions:
-  contents: write # Diperlukan untuk membuat Release
+  contents: write # Wajib untuk membuat Release
 
 jobs:
-  generate-and-release:
+  generate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
       
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -25,24 +27,30 @@ jobs:
       - name: Create Test Script
         run: |
           cat <<EOF > generate.spec.js
-          const { test } = require('@playwright/test');
+          const { test, expect } = require('@playwright/test');
           const fs = require('fs');
 
-          test('Generate and download image', async ({ page }) => {
+          test('Generate and save image', async ({ page }) => {
             await page.goto('https://freegen.app/');
+            
+            // Pilih aspect ratio 9:16
             await page.selectOption('#aspectRatioSelect', '9:16');
-            await page.fill('#prompt', 'A futuristic city, cinematic lighting, 8k');
+            
+            // Masukkan prompt
+            await page.fill('#prompt', 'A majestic mountain landscape, high resolution');
             await page.keyboard.press('Enter');
             
-            // Tunggu elemen hasil muncul (sesuaikan selector jika perlu)
-            const resultSelector = '.result-image'; 
-            await page.waitForSelector(resultSelector, { timeout: 60000 });
+            // Tunggu container hasil muncul
+            const imageContainer = page.locator('#imageContainer');
+            await expect(imageContainer).toBeVisible({ timeout: 90000 });
             
-            // Download file
-            const downloadPromise = page.waitForEvent('download');
-            await page.click(resultSelector); 
-            const download = await downloadPromise;
-            await download.saveAs('./hasil-gambar.png');
+            // Ambil data gambar (Base64)
+            const generatedImage = imageContainer.locator('img');
+            const src = await generatedImage.getAttribute('src');
+            
+            // Konversi Base64 ke buffer dan simpan
+            const base64Data = src.replace(/^data:image\/jpeg;base64,/, "");
+            fs.writeFileSync('./hasil-gambar.jpg', base64Data, 'base64');
           });
           EOF
 
@@ -51,9 +59,10 @@ jobs:
 
       - name: Create Release and Upload
         uses: softprops/action-gh-release@v2
+        if: success()
         with:
-          tag_name: "generated-${{ github.run_id }}"
-          name: "Hasil Generasi Gambar ${{ github.run_id }}"
-          files: ./hasil-gambar.png
+          tag_name: "hasil-${{ github.run_id }}"
+          name: "Hasil Generasi AI - Run ${{ github.run_id }}"
+          files: ./hasil-gambar.jpg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
