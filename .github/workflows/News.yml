@@ -21,15 +21,10 @@ jobs:
 
       - name: Edit Video with FFmpeg
         run: |
-          # Penjelasan:
-          # 1. scale=900:1600 -> Memaksa video menjadi lebih kecil dari target 1080x1920 agar ada margin hitam.
-          # 2. pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black -> Menempatkan video di tengah frame 1080x1920.
-          # 3. fontfile -> Menggunakan path yang sudah dipastikan ada setelah install fonts-dejavu.
-          
           ffmpeg -i input.mp4 -vf "\
           scale=900:1600:force_original_aspect_ratio=decrease,\
-          pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black,\
-          drawtext=text='PRODUK TERBAIK':fontcolor=white:fontsize=80:x=(w-text_w)/2:y=150:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" \
+          pad=1080:1920:(ow-iw)/2:(oh-ih)/2 + 100:color=black,\
+          drawtext=text='PRODUK TERBAIK':fontcolor=white:fontsize=80:x=(w-text_w)/2:y=80:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" \
           -c:a copy -y output.mp4
 
       - name: Upload Processed Video
