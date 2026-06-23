@@ -10,8 +10,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install FFmpeg and Fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu
 
       - name: Download Video
         run: |
@@ -19,16 +21,16 @@ jobs:
 
       - name: Edit Video with FFmpeg
         run: |
-          # 1. scale: menyesuaikan video agar masuk dalam frame 1080x1920 tanpa crop
-          # 2. pad: mengisi sisa ruang dengan warna hitam
-          # 3. drawtext: menaruh tulisan di bagian atas
-          # Note: fontfile menggunakan path standar di runner ubuntu
+          # Penjelasan:
+          # 1. scale=900:1600 -> Memaksa video menjadi lebih kecil dari target 1080x1920 agar ada margin hitam.
+          # 2. pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black -> Menempatkan video di tengah frame 1080x1920.
+          # 3. fontfile -> Menggunakan path yang sudah dipastikan ada setelah install fonts-dejavu.
           
           ffmpeg -i input.mp4 -vf "\
-          scale=1080:1920:force_original_aspect_ratio=decrease,\
-          pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,\
+          scale=900:1600:force_original_aspect_ratio=decrease,\
+          pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black,\
           drawtext=text='PRODUK TERBAIK':fontcolor=white:fontsize=80:x=(w-text_w)/2:y=150:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" \
-          -c:a copy output.mp4
+          -c:a copy -y output.mp4
 
       - name: Upload Processed Video
         uses: actions/upload-artifact@v4
