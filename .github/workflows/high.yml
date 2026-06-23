@@ -1,185 +1,142 @@
-name: HighReach Downloader
+name: Playwright YouTube Shorts Downloader
 
 on:
-  workflow_dispatch:
-    inputs:
-      youtube_url:
-        description: "YouTube Shorts URL"
-        required: true
+  workflow_dispatch: # Memungkinkan Anda menjalankan workflow ini secara manual dari GitHub Actions UI
 
 jobs:
-  downloader:
+  download-video:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-on-version: '20'
 
-      - name: Install Playwright
+      - name: Install dependencies
         run: |
           npm init -y
-          npm i playwright
-          npx playwright install chromium --with-deps
+          npm install playwright
 
-      - name: Run Playwright
-        env:
-          SHORT_URL: ${{ github.event.inputs.youtube_url }}
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright Script
         run: |
-          cat > script.mjs <<'EOF'
-          import fs from "fs";
-          import { chromium } from "playwright";
+          node -e "
+          const { chromium } = require('playwright');
 
-          const MAX_RETRIES = 3;
-
-          const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-          const browser = await chromium.launch({
-            headless: true,
-            args: [
-              "--no-sandbox",
-              "--disable-dev-shm-usage"
-            ]
-          });
-
-          for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-
-            console.log(`===== Attempt ${attempt}/${MAX_RETRIES} =====`);
-
+          (async () => {
+            // Meluncurkan browser chromium dalam mode headless
+            const browser = await chromium.launch({ headless: true });
             const context = await browser.newContext({
-              acceptDownloads: true,
-              viewport: {
-                width: 1440,
-                height: 900
-              },
-              userAgent:
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136 Safari/537.36"
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             });
-
             const page = await context.newPage();
 
             try {
+              console.log('Membuka halaman target...');
+              await page.goto('https://highreach.ai/tools/youtube-shorts-downloader', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-              console.log("Opening website...");
+              // Menunggu kolom input video URL tersedia
+              // Menyesuaikan selector input yang umum untuk downloader (bisa diadaptasi jika struktur web berbeda)
+              const inputSelector = 'input[type=\"text\"], input[type=\"url\"], #url';
+              await page.waitForSelector(inputSelector, { timeout: 15000 });
+              
+              console.log('Mengisi URL YouTube Shorts...');
+              await page.fill(inputSelector, 'https://youtube.com/shorts/tjPDRZgzNLE');
+              
+              console.log('Menekan Enter untuk memproses...');
+              await page.press(inputSelector, 'Enter');
 
-              await page.goto(
-                "https://highreach.ai/tools/youtube-shorts-downloader",
-                {
-                  waitUntil: "networkidle",
-                  timeout: 90000
-                }
-              );
-
-              console.log("Finding input...");
-
-              const input = page.locator("input").first();
-
-              await input.waitFor({
-                timeout: 30000
-              });
-
-              await input.fill(process.env.SHORT_URL);
-
-              await input.press("Enter");
-
-              console.log("Waiting processing...");
-
-              await sleep(8000);
-
-              console.log("Looking for mp4 result...");
-
-              const candidates = page.locator(
-                "button, a"
-              );
-
-              const total = await candidates.count();
-
-              let clicked = false;
-
-              for (let i = 0; i < total; i++) {
-
-                const el = candidates.nth(i);
-
-                const text = (await el.innerText().catch(()=>"")).toLowerCase();
-
-                console.log(text);
-
-                if (
-                  text.includes("mp4")
-                ) {
-                  console.log("Clicking:", text);
-
-                  await Promise.all([
-                    page.waitForLoadState("networkidle").catch(()=>{}),
-                    el.click({ force: true })
-                  ]);
-
-                  clicked = true;
-                  break;
-                }
-
-              }
-
-              if (!clicked)
-                throw new Error("No MP4 option found.");
-
-              console.log("Waiting redirect...");
-
+              console.log('Menunggu hasil opsi download siap...');
+              // Menunggu spinner atau loading selesai dan tombol/opsi download muncul
+              // Opsi download biasanya berupa button atau link di dalam tabel/list
+              await page.waitForSelector('a, button', { timeout: 30000 });
+              // Memberikan jeda tambahan agar seluruh opsi resolusi ter-render dengan sempurna
               await page.waitForTimeout(5000);
 
-              console.log("Current URL:");
-              console.log(page.url());
+              // Mencari semua element tombol atau link download yang tersedia
+              const elements = await page.$$('a, button');
+              let targetElement = null;
+              let highestQuality = 0;
 
-              fs.appendFileSync(
-                process.env.GITHUB_ENV,
-                `REDIRECT_URL=${page.url()}\n`
-              );
+              console.log('Menganalisis kualitas video terbaik...');
+              for (const el of elements) {
+                const text = (await el.textContent() || '').toLowerCase();
+                const href = await el.getAttribute('href') || '';
+                
+                // Memastikan ini adalah tombol download/resolusi, bukan menu navigasi website
+                if (text.includes('download') || text.includes('mp4') || /\d{3,4}p/.test(text)) {
+                  // Utamakan format MP4 jika ada di dalam teks atau attribute href
+                  const isMp4 = text.includes('mp4') || href.includes('.mp4');
+                  
+                  // Ekstrak angka resolusi (misal: 1080p -> 1080, 720p -> 720)
+                  const match = text.match(/(\d{3,4})p?/);
+                  const quality = match ? parseInt(match[1], 10) : 360; // default ke 360 jika tidak tertulis angkanya
 
-              await page.screenshot({
-                path: "success.png",
-                fullPage: true
-              });
+                  // Bobot ekstra untuk MP4 agar diprioritaskan di atas format lain (seperti webm)
+                  const score = quality + (isMp4 ? 10000 : 0);
 
-              await context.close();
-              await browser.close();
-
-              process.exit(0);
-
-            } catch (err) {
-
-              console.log(err);
-
-              await page.screenshot({
-                path: `error-${attempt}.png`,
-                fullPage: true
-              });
-
-              await context.close();
-
-              if (attempt === MAX_RETRIES) {
-                await browser.close();
-                process.exit(1);
+                  if (score > highestQuality) {
+                    highestQuality = score;
+                    targetElement = el;
+                  }
+                }
               }
 
-              await sleep(10000);
+              if (targetElement) {
+                console.log(`Menemukan opsi terbaik dengan score/kualitas: ${highestQuality}. Melakukan klik...`);
+                
+                // Karena mengklik tombol download seringkali memicu navigasi atau membuka tab baru,
+                // kita tunggu event navigasi halaman utama atau halaman baru selesai dimuat.
+                await Promise.all([
+                  page.waitForNavigation({ waitUntil: 'networkidle', timeout: 30000 }).catch(() => console.log('Navigasi selesai atau halaman langsung mengunduh.')),
+                  targetElement.click()
+                ]);
+
+                // Memberikan jeda beberapa detik untuk memastikan pengalihan URL (anchor button redirection) selesai sepenuhnya
+                await page.waitForTimeout(5000);
+
+                // Mengambil URL akhir setelah klik
+                const finalUrl = page.url();
+                console.log('================ LAPORAN LOG URL ================');
+                console.log(`URL Halaman Akhir / Download: ${finalUrl}`);
+                console.log('==================================================');
+
+              } else {
+                console.log('Gagal mendeteksi tombol atau resolusi download terbaik. Mencoba klik tombol download pertama yang ditemukan.');
+                // Fallback jika logika pencarian resolusi terlalu spesifik
+                const fallbackBtn = await page.$('a[href*=\"download\"], button:has-text(\"Download\")');
+                if (fallbackBtn) {
+                  await Promise.all([
+                    page.waitForNavigation({ waitUntil: 'networkidle' }).catch(() => {}),
+                    fallbackBtn.click()
+                  ]);
+                  await page.waitForTimeout(5000);
+                  console.log(`URL Halaman Akhir (Fallback): ${page.url()}`);
+                } else {
+                  console.log('Tombol download tidak ditemukan sama sekali. Silakan periksa kembali struktur selector halaman target.');
+                }
+              }
+
+            } catch (error) {
+              console.error('Terjadi kesalahan saat eksekusi:', error);
+              // Mengambil screenshot untuk debugging jika terjadi kegagalan sistem di GitHub Actions
+              await page.screenshot({ path: 'error-screenshot.png' });
+              process.exit(1);
+            } finally {
+              await browser.close();
             }
-          }
+          })();
+          "
 
-          EOF
-
-          node script.mjs
-
-      - name: Show Redirect URL
-        run: |
-          echo "$REDIRECT_URL"
-
-      - name: Upload Screenshots
-        if: always()
+      - name: Upload Screenshot jika Error
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshots
-          path: |
-            *.png
+          name: error-screenshot
+          path: error-screenshot.png
