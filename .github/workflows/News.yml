@@ -1,0 +1,37 @@
+name: Video Editor Pipeline
+
+on:
+  workflow_dispatch:
+
+jobs:
+  process-video:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Download Video
+        run: |
+          curl -L "https://v1.pinimg.com/videos/iht/720p/7a/6e/04/7a6e04ad42ddbb58af9c42e03aab5435.mp4" -o input.mp4
+
+      - name: Edit Video with FFmpeg
+        run: |
+          # 1. scale: menyesuaikan video agar masuk dalam frame 1080x1920 tanpa crop
+          # 2. pad: mengisi sisa ruang dengan warna hitam
+          # 3. drawtext: menaruh tulisan di bagian atas
+          # Note: fontfile menggunakan path standar di runner ubuntu
+          
+          ffmpeg -i input.mp4 -vf "\
+          scale=1080:1920:force_original_aspect_ratio=decrease,\
+          pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,\
+          drawtext=text='PRODUK TERBAIK':fontcolor=white:fontsize=80:x=(w-text_w)/2:y=150:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" \
+          -c:a copy output.mp4
+
+      - name: Upload Processed Video
+        uses: actions/upload-artifact@v4
+        with:
+          name: Video-Hasil-Edit
+          path: output.mp4
