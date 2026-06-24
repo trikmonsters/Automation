@@ -1,0 +1,42 @@
+name: Generate Psychology Script
+
+on:
+  workflow_dispatch:
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate script with Owl Alpha
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          RESPONSE=$(curl -s https://openrouter.ai/api/v1/chat/completions \
+            -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "openrouter/owl-alpha",
+              "messages": [
+                {
+                  "role": "system",
+                  "content": "You are an expert psychology writer. Use factual psychology concepts, cite established theories when relevant, and do not invent studies."
+                },
+                {
+                  "role": "user",
+                  "content": "Write a 2000-word YouTube narration about why people overthink."
+                }
+              ],
+              "temperature": 0.7,
+              "max_tokens": 4000
+            }')
+
+          echo "========================================"
+          echo "GENERATED SCRIPT"
+          echo "========================================"
+
+          echo "$RESPONSE" | jq -r '.choices[0].message.content'
+
+          echo "========================================"
+          echo "END OF SCRIPT"
+          echo "========================================"
