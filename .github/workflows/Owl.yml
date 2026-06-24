@@ -14,6 +14,9 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Install Dependencies
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg jq
+
       - name: Generate Narrative and TTS
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -33,9 +36,12 @@ jobs:
           
           NARRATIVE=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
           echo "$NARRATIVE" > full_script.txt
-
-          # 2. ROBUST SPLIT
+          
+          # 2. ROBUST SPLIT (Memastikan 3 file selalu ada)
+          # Memecah file menjadi 3 bagian
           split -n 3 -d full_script.txt part_
+          
+          # Rename file agar konsisten
           [ -f part_00 ] && mv part_00 part_1.txt || echo "Placeholder" > part_1.txt
           [ -f part_01 ] && mv part_01 part_2.txt || echo "Placeholder" > part_2.txt
           [ -f part_02 ] && mv part_02 part_3.txt || echo "Placeholder" > part_3.txt
@@ -45,19 +51,29 @@ jobs:
             PART_FILE="part_$i.txt"
             echo "Processing Request $i/3: $PART_FILE..."
             
+            # Panggil API Gemini TTS
             curl -s "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=$GEMINI_API_KEY" \
               -H "Content-Type: application/json" \
               -d "$(jq -n --arg text "$(cat $PART_FILE)" \
                 '{contents: [{parts: [{"text": ("Read this with a deep, cinematic, professional narrator voice: " + $text)}]}]}')" \
               | jq -r '.candidates[0].content.parts[0].inlineData.data' > "audio_$i.base64"
             
-            [ -s "audio_$i.base64" ] && base64 -d "audio_$i.base64" > "audio_$i.mp3"
+            # Dekode base64 ke mp3
+            if [ -s "audio_$i.base64" ]; then
+              base64 -d "audio_$i.base64" > "audio_$i.mp3"
+            else
+              echo "Warning: API response for part $i is empty."
+              echo "Generating empty silence file for part $i."
+              ffmpeg -f lavfi -i anullsrc=r=24000:cl=mono -t 1 audio_$i.mp3
+            fi
             
-            if [ $i -lt 3 ]; then sleep 35; fi
+            if [ $i -lt 3 ]; then
+              echo "Waiting 35 seconds to respect rate limits..."
+              sleep 35
+            fi
           done
 
           # 4. MERGE AUDIO
-          # Membuat list untuk ffmpeg
           echo "file 'audio_1.mp3'" > list.txt
           echo "file 'audio_2.mp3'" >> list.txt
           echo "file 'audio_3.mp3'" >> list.txt
