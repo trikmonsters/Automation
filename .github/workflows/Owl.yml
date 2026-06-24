@@ -1,42 +1,49 @@
 name: Generate Psychology Script
-
 on:
   workflow_dispatch:
+    inputs:
+      TOPIC_INPUT:
+        description: 'The psychological topic for the script'
+        required: true
+        default: 'The anatomy of overthinking'
 
 jobs:
   generate:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Generate script with Owl Alpha
+      - name: Generate script with Elite Narrative Design
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TOPIC_INPUT: ${{ github.event.inputs.TOPIC_INPUT }}
         run: |
+          # Define the system prompt provided
+          SYSTEM_PROMPT="You are an elite, avant-garde psychological storyteller and narrative designer. Your goal is to write long-form, deeply creative, and highly immersive narratives based on a given topic. 
+          CRITICAL MANDATE: You must completely avoid clichés, predictable tropes, and generic AI writing structures (e.g., introducing a character named 'Leo who always wondered...', or starting with 'In a world where...'). Every story concept must be an entirely fresh, original psychological perspective that has never been used before.
+          Follow these strict structural guidelines for every output:
+          1. Tone & Style: Atmospheric, intellectually stimulating, deeply psychological, and cinematic. Use vivid imagery and unconventional metaphors.
+          2. Narrative Length: Write an extended, multi-paragraph narrative (minimum 1000-1500 words) that explores the psychological depth of the topic. Do not rush the ending.
+          3. Psychological Core: Focus on internal conflict, cognitive biases, the subconscious, altered states of mind, or the complexity of human behavior.
+          4. Output Language: Perfect, sophisticated English.
+          Formatting Structure for Output:
+          - Each paragraph MUST be dense, descriptive, and substantial, containing a MINIMUM of 4 long, fully-developed sentences (at least 4 lines of text per paragraph). Short, single-sentence, or fragmented paragraphs are strictly forbidden."
+
+          # Define the user prompt provided
+          USER_PROMPT="Act as the System Prompt instructed. Generate a brand-new, deeply psychological, and highly creative long-form narrative. Ensure each paragraph is thick and fully developed with at least 4 sentences/lines.\n\nTopic/Title: $TOPIC_INPUT\n\nEnsure the plot twist or core psychological angle is entirely unpredictable and uniquely conceptualized. Write it in Indonesia."
+
+          # Execute API call using jq to build the JSON
           RESPONSE=$(curl -s https://openrouter.ai/api/v1/chat/completions \
             -H "Authorization: Bearer $OPENROUTER_API_KEY" \
             -H "Content-Type: application/json" \
-            -d '{
-              "model": "openrouter/owl-alpha",
-              "messages": [
-                {
-                  "role": "system",
-                  "content": "You are an expert psychology writer. Use factual psychology concepts, cite established theories when relevant, and do not invent studies."
-                },
-                {
-                  "role": "user",
-                  "content": "Write a 2000-word YouTube narration about why people overthink."
-                }
-              ],
-              "temperature": 0.7,
-              "max_tokens": 4000
-            }')
+            -d "$(jq -n \
+              --arg model "openrouter/owl-alpha" \
+              --arg sp "$SYSTEM_PROMPT" \
+              --arg up "$USER_PROMPT" \
+              '{model: $model, messages: [{role: "system", content: $sp}, {role: "user", content: $up}], temperature: 0.7, max_tokens: 4000}')")
 
           echo "========================================"
-          echo "GENERATED SCRIPT"
+          echo "GENERATED NARRATIVE SCRIPT"
           echo "========================================"
-
           echo "$RESPONSE" | jq -r '.choices[0].message.content'
-
           echo "========================================"
           echo "END OF SCRIPT"
           echo "========================================"
