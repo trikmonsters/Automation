@@ -57,9 +57,9 @@ jobs:
 
               console.log("Waiting for download button...");
               const btn = page.locator("button.download");
-              await btn.waitFor({ state: "visible", timeout: 60000 });
+              await btn.waitFor({ state: "visible", timeout: 180000 });
 
-              const downloadPromise = page.waitForEvent("download", { timeout: 60000 });
+              const downloadPromise = page.waitForEvent("download", { timeout: 180000 });
               await btn.click({ force: true });
 
               const download = await downloadPromise;
@@ -125,7 +125,7 @@ jobs:
           # 3. Generate Metadata
           prompt = "Buatkan metadata: Baris 1: [Judul] - [Artist]. Baris 2: Deskripsi singkat. Baris 3: 4 Hashtag. Hanya berikan 3 baris tersebut."
           gen_req = urllib.request.Request(
-              f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}",
+              f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={api_key}",
               data=json.dumps({"contents": [{"parts": [{"file_data": {"mime_type": "video/mp4", "file_uri": f"https://generativelanguage.googleapis.com/v1beta/{file_name}"}}, {"text": prompt}]}]}).encode(),
               headers={"Content-Type": "application/json"}, method="POST"
           )
