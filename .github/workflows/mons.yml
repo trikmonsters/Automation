@@ -13,6 +13,10 @@ on:
         required: false
         default: "true"
         type: string
+      tiktok_caption:
+        required: false
+        default: ""
+        type: string
 
 jobs:
   upload:
@@ -81,62 +85,6 @@ jobs:
         env:
           SHORT_URL: ${{ github.event.inputs.youtube_url }}
 
-      - name: Process video with Gemini AI
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          VIDEO_FILE: ${{ env.OUTPUT_FILE }}
-        run: |
-          python3 - <<'PYEOF'
-          import os, json, time, urllib.request, urllib.error
-
-          def call_api_with_retry(request, retries=5):
-              for i in range(retries):
-                  try:
-                      return urllib.request.urlopen(request)
-                  except urllib.error.HTTPError as e:
-                      if e.code in [503, 500] and i < retries - 1:
-                          wait = (i + 1) * 20
-                          print(f"Gemini API Error {e.code}, retry {i+1} in {wait}s...")
-                          time.sleep(wait)
-                          continue
-                      raise e
-
-          api_key = os.environ["GEMINI_API_KEY"]
-          video_file = os.environ["VIDEO_FILE"]
-
-          # 1. Upload Video
-          with open(video_file, "rb") as f: video_bytes = f.read()
-          init_req = urllib.request.Request(
-              f"https://generativelanguage.googleapis.com/upload/v1beta/files?key={api_key}",
-              data=json.dumps({"file": {"display_name": video_file}}).encode(),
-              headers={"Content-Type": "application/json", "X-Goog-Upload-Protocol": "resumable", "X-Goog-Upload-Command": "start", "X-Goog-Upload-Header-Content-Length": str(len(video_bytes)), "X-Goog-Upload-Header-Content-Type": "video/mp4"},
-              method="POST"
-          )
-          upload_url = call_api_with_retry(init_req).headers["X-Goog-Upload-URL"]
-          call_api_with_retry(urllib.request.Request(upload_url, data=video_bytes, headers={"Content-Length": str(len(video_bytes)), "X-Goog-Upload-Offset": "0", "X-Goog-Upload-Command": "upload, finalize"}, method="POST"))
-          
-          # 2. Polling ACTIVE
-          file_name = json.loads(call_api_with_retry(urllib.request.Request(upload_url, headers={"X-Goog-Upload-Command": "query"}, method="POST")).read().decode())["file"]["name"]
-          while True:
-              state = json.loads(urllib.request.urlopen(f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key}").read().decode()).get("state")
-              if state == "ACTIVE": break
-              time.sleep(10)
-
-          # 3. Generate Metadata
-          prompt = "Buatkan metadata: Baris 1: [Judul] - [Artist]. Baris 2: Deskripsi singkat. Baris 3: 4 Hashtag. Hanya berikan 3 baris tersebut."
-          gen_req = urllib.request.Request(
-              f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={api_key}",
-              data=json.dumps({"contents": [{"parts": [{"file_data": {"mime_type": "video/mp4", "file_uri": f"https://generativelanguage.googleapis.com/v1beta/{file_name}"}}, {"text": prompt}]}]}).encode(),
-              headers={"Content-Type": "application/json"}, method="POST"
-          )
-          
-          res = json.loads(call_api_with_retry(gen_req).read().decode())
-          output = res["candidates"][0]["content"]["parts"][0]["text"].strip()
-          
-          with open(os.environ["GITHUB_ENV"], "a") as env_file:
-              env_file.write(f"TIKTOK_CAPTION<<EOF_CAPTION\n{output}\nEOF_CAPTION\n")
-          PYEOF
-
       - name: Delete old release
         if: ${{ github.event.inputs.upload_tiktok == 'true' }}
         env:
@@ -169,6 +117,7 @@ jobs:
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
           BUFFER_CHANNEL_ID: "6a2f0cb138b557934596594b"
           VIDEO_URL: ${{ env.VIDEO_URL }}
+          TIKTOK_CAPTION: ${{ github.event.inputs.tiktok_caption }}
         run: |
           python3 - <<'PYEOF'
           import os, json, urllib.request
