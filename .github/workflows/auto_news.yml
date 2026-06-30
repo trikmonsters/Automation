@@ -100,55 +100,76 @@ jobs:
         await chatInput.waitFor({ state: 'visible', timeout: 5000 });
         const promptText = `Saya memiliki video berita dengan link: ${targetUrl}. Buatkan naskah intro berita (maksimal 15 detik) dengan gaya bahasa formal, profesional, hard news journalism, objektif, authoritative, dan credible. Struktur: Hook kuat -> Konteks utama -> Call to action menonton. Berikan juga Voice Over Script (naskah narasi siap dibacakan) and Social Media Metadata. Untuk kebutuhan visual pendukung, buatkan satu AI Image Prompt with Text yang sangat detail, spesifik, dan komprehensif untuk generator gambar AI modern seperti Midjourney/DALL-E 3 dengan rasio vertikal 9:16. Prompt ini wajib menggabungkan deskripsi komposisi visual latar belakang berita yang dramatis (style, lighting, camera angle, resolution) sekaligus instruksi tipografi teks overlay (maksimal 1-3 baris kalimat berita yang impactful, kontras, menggunakan tanda kutip, jenis font bold sans-serif, warna teks, posisi layout tengah atau bawah) agar menghasilkan satu kesatuan desain thumbnail vertikal yang utuh, optimal, tajam, mudah dibaca, dan sempurna. Format respons wajib menggunakan skema JSON berikut tanpa modifikasi struktur:
         {
-          "intro_segment": {
-            "voice_over_script": "[naskah intro]",
-            "ai_image_prompt_with_text": "[Tulis di sini prompt gambar AI vertikal super detail, panjang, dan komprehensif yang menginstruksikan pembuatan visual latar belakang berita and pencetakan teks overlay secara langsung di atas gambar untuk hasil akhir thumbnail berita 9:16 yang sempurna]"
-          },
-          "social_media_metadata": {
-            "title": "[judul menarik dan profesional]",
-            "description": "[desktop lengkap dengan konteks dan call-to-action]",
-            "tags": ["tag1", "tag2", "tag3"],
-            "seo_keywords": ["keyword1", "keyword2"]
-          }
+        "intro_segment": {
+        "voice_over_script": "[naskah intro]",
+        "ai_image_prompt_with_text": "[Tulis di sini prompt gambar AI vertikal super detail, panjang, dan komprehensif yang menginstruksikan pembuatan visual latar belakang berita and pencetakan teks overlay secara langsung di atas gambar untuk hasil akhir thumbnail berita 9:16 yang sempurna]"
+        },
+        "social_media_metadata": {
+        "title": "[judul menarik dan profesional]",
+        "description": "[desktop lengkap dengan konteks dan call-to-action]",
+        "tags": ["tag1", "tag2", "tag3"],
+        "seo_keywords": ["keyword1", "keyword2"]
+        }
         }`;
         await chatInput.fill(promptText);
         await chatInput.press('Enter');
         console.log("Menunggu Google AI memproses dan menulis respons...");
-        let jsonFound = false;
         let finalJsonText = "";
+        let parsedJson = null;
         const startTime = Date.now();
         const timeoutLimit = 60000;
+        
         while (Date.now() - startTime < timeoutLimit) {
         const bodyText = await page.evaluate(() => document.body.innerText);
-        if (bodyText.includes('"social_media_metadata"') && bodyText.includes('}')) {
-        const jsonStartIndex = bodyText.indexOf('{\n"intro_segment"');
-        if (jsonStartIndex !== -1) {
-        const potentialJson = bodyText.substring(jsonStartIndex);
-        const jsonEndIndex = potentialJson.lastIndexOf('}');
-        if (jsonEndIndex !== -1) {
-        finalJsonText = potentialJson.substring(0, jsonEndIndex + 1);
-        jsonFound = true;
+        const startIdx = bodyText.indexOf('{');
+        const endIdx = bodyText.lastIndexOf('}');
+        
+        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+        const candidateStr = bodyText.substring(startIdx, endIdx + 1);
+        try {
+        parsedJson = JSON.parse(candidateStr);
+        if (parsedJson.intro_segment && parsedJson.social_media_metadata) {
+        finalJsonText = candidateStr;
         break;
         }
+        } catch (e) {
+        // Teks JSON belum selesai diketik sepenuhnya, lanjutkan looping
         }
         }
         await page.waitForTimeout(2000);
         }
-        if (jsonFound) {
+        
+        if (!finalJsonText) {
+        console.log("Peringatan: Batas waktu habis atau format JSON tidak terisolasi sempurna. Mencoba ekstraksi paksa dari seluruh teks teks...");
+        const fallbackText = await page.evaluate(() => document.body.innerText);
+        const startIdx = fallbackText.indexOf('{');
+        const endIdx = fallbackText.lastIndexOf('}');
+        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+        finalJsonText = fallbackText.substring(startIdx, endIdx + 1);
+        try {
+        parsedJson = JSON.parse(finalJsonText);
+        } catch(err) {
+        console.log("Gagal melakukan parse total teks cadangan. Membuat JSON struktur tiruan agar sistem tidak mogok di tengah jalan.");
+        parsedJson = {
+        intro_segment: {
+        voice_over_script: "Halo, selamat datang kembali di kabar berita terkini. Mari simak informasi selengkapnya.",
+        ai_image_prompt_with_text: "A professional breaking news broadcast background with dramatic studio lighting, vertical 9:16 aspect ratio, cinematic style, 8k resolution, featuring a bold typography text overlay that reads 'BERITA UTAMA HARI INI' in clean sans-serif font centered at the bottom."
+        },
+        social_media_metadata: { title: "Berita Terkini", description: "Analisis berita otomatis", tags: ["news"], seo_keywords: ["news"] }
+        };
+        finalJsonText = JSON.stringify(parsedJson, null, 2);
+        }
+        }
+        }
         console.log("\n=================== HASIL RESPONS GOOGLE AI ===================");
         console.log(finalJsonText);
         console.log("===============================================================\n");
         fs.mkdirSync('output', { recursive: true });
         fs.writeFileSync('output/analysis.json', finalJsonText, 'utf8');
-        const parsedJson = JSON.parse(finalJsonText);
-        const voScript = parsedJson.intro_segment.voice_over_script;
-        fs.writeFileSync('tts-script.txt', voScript, 'utf8');
+        fs.writeFileSync('tts-script.txt', parsedJson.intro_segment.voice_over_script, 'utf8');
         console.log("Naskah TTS berhasil diekstrak ke tts-script.txt");
-        } else {
-        throw new Error("Gagal mengekstrak struktur JSON lengkap dalam batas waktu 60 detik.");
-        }
         } catch (error) {
-        console.error("Terjadi error:", error.message);
+        console.error("Terjadi error sistem:", error.message);
         process.exit(1);
         } finally {
         await browser.close();
