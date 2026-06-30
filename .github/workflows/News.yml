@@ -2,6 +2,18 @@ name: Video Editor Pipeline
 
 on:
   workflow_dispatch:
+    inputs:
+      youtube_url:
+        description: 'Masukkan URL YouTube Shorts'
+        required: true
+        default: 'https://youtube.com/shorts/SKM6R96p0tM'
+      text_overlay:
+        description: 'Masukkan Teks untuk Video (drawtext)'
+        required: true
+        default: 'PRODUK TERBAIK'
+
+permissions:
+  contents: write
 
 jobs:
   process-video:
@@ -10,25 +22,88 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Dependencies
+        run: |
+          npm init -y
+          npm install playwright
+
+      - name: Install Playwright Browsers
+        run: npx playwright install chromium --with-deps
+
       - name: Install FFmpeg and Fonts
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu
 
-      - name: Download Video
+      - name: Download Video via Automation
+        env:
+          YT_URL: ${{ github.event.inputs.youtube_url }}
         run: |
-          curl -L "https://v1.pinimg.com/videos/iht/720p/7a/6e/04/7a6e04ad42ddbb58af9c42e03aab5435.mp4" -o input.mp4
+          cat << 'EOF' > automation.js
+          const { chromium } = require('playwright');
+          const path = require('path');
+
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            const page = await browser.newPage();
+
+            await page.goto('https://media.ytmp3.gg/tools/youtube-shorts-downloader/cvswxo', { waitUntil: 'networkidle' });
+
+            const mp4BtnSelector = '.format-toggle button[data-format="mp4"]';
+            await page.waitForSelector(mp4BtnSelector, { state: 'visible', timeout: 10000 });
+            await page.click(mp4BtnSelector);
+
+            const checkboxSelector = '#copyright-consent-checkbox';
+            await page.waitForSelector(checkboxSelector, { state: 'attached', timeout: 5000 });
+            
+            const isChecked = await page.isChecked(checkboxSelector);
+            if (!isChecked) {
+              await page.click(checkboxSelector);
+            }
+
+            await page.fill('#videoUrl', process.env.YT_URL);
+            await page.press('#videoUrl', 'Enter');
+
+            await page.waitForSelector('#download-btn', { state: 'visible', timeout: 120000 });
+
+            const downloadPromise = page.waitForEvent('download');
+            await page.click('#download-btn');
+            const download = await downloadPromise;
+
+            const downloadPath = path.join(__dirname, 'input.mp4');
+            await download.saveAs(downloadPath);
+
+            await browser.close();
+          })();
+          EOF
+          node automation.js
 
       - name: Edit Video with FFmpeg
+        env:
+          TEXT_INPUT: ${{ github.event.inputs.text_overlay }}
         run: |
           ffmpeg -i input.mp4 -vf "\
           scale=900:1600:force_original_aspect_ratio=decrease,\
           pad=1080:1920:(ow-iw)/2:(oh-ih)/2 + 100:color=black,\
-          drawtext=text='PRODUK TERBAIK':fontcolor=white:fontsize=80:x=(w-text_w)/2:y=80:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" \
+          drawtext=text='${{ env.TEXT_INPUT }}':fontcolor=white:fontsize=80:x=(w-text_w)/2:y=80:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" \
           -c:a copy -y output.mp4
 
-      - name: Upload Processed Video
-        uses: actions/upload-artifact@v4
+      - name: Get Current Date for Release Tag
+        id: date
+        run: echo "tag=v$(date +'%Y.%m.%d.%H%M%S')" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release and Upload Video
+        uses: softprops/action-gh-release@v2
         with:
-          name: Video-Hasil-Edit
-          path: output.mp4
+          tag_name: ${{ steps.date.outputs.tag }}
+          name: "Video Hasil Edit - ${{ steps.date.outputs.tag }}"
+          body: "Video berhasil diunduh secara otomatis dari input dan diedit menggunakan FFmpeg."
+          draft: false
+          prerelease: false
+          files: |
+            output.mp4
