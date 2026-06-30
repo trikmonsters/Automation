@@ -1,0 +1,406 @@
+name: Playwright Google AI News Analyzer
+
+on:
+  workflow_dispatch:
+    inputs:
+      youtube_url:
+        description: 'Masukkan URL YouTube yang akan dianalisis'
+        required: true
+        default: 'https://youtube.com/shorts/VxY4OOYCpIw'
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install Dependencies & FFmpeg
+      run: |
+        npm init -y
+        npm install playwright playwright-extra puppeteer-extra-plugin-stealth
+        npx playwright install --with-deps chromium
+        pip install google-genai
+        sudo apt-get update && sudo apt-get install -y ffmpeg
+
+    - name: Download Video via Automation
+      env:
+        YT_URL: ${{ github.event.inputs.youtube_url }}
+      run: |
+        cat << 'EOF' > automation.js
+        const { chromium } = require('playwright');
+        const path = require('path');
+        (async () => {
+        const browser = await chromium.launch({ headless: true });
+        const page = await browser.newPage();
+        await page.goto('https://media.ytmp3.gg/tools/youtube-shorts-downloader/cvswxo', { waitUntil: 'networkidle' });
+        const mp4BtnSelector = '.format-toggle button[data-format="mp4"]';
+        await page.waitForSelector(mp4BtnSelector, { state: 'visible', timeout: 10000 });
+        await page.click(mp4BtnSelector);
+        const checkboxSelector = '#copyright-consent-checkbox';
+        await page.waitForSelector(checkboxSelector, { state: 'attached', timeout: 5000 });
+        const isChecked = await page.isChecked(checkboxSelector);
+        if (!isChecked) {
+        await page.click(checkboxSelector);
+        }
+        await page.fill('#videoUrl', process.env.YT_URL);
+        await page.press('#videoUrl', 'Enter');
+        await page.waitForSelector('#download-btn', { state: 'visible', timeout: 120000 });
+        const downloadPromise = page.waitForEvent('download');
+        await page.click('#download-btn');
+        const download = await downloadPromise;
+        const downloadPath = path.join(__dirname, 'input.mp4');
+        await download.saveAs(downloadPath);
+        await browser.close();
+        })();
+        EOF
+        node automation.js
+
+    - name: Run Playwright Script
+      env:
+        YOUTUBE_URL: ${{ github.event.inputs.youtube_url }}
+      run: |
+        cat << 'EOF' > script.js
+        const { chromium } = require('playwright-extra');
+        const stealth = require('puppeteer-extra-plugin-stealth')();
+        chromium.use(stealth);
+        const fs = require('fs');
+        (async () => {
+        const targetUrl = process.env.YOUTUBE_URL || 'https://youtube.com/shorts/VxY4OOYCpIw';
+        const browser = await chromium.launch({ 
+        headless: true,
+        args: [
+        '--no-sandbox', 
+        '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled'
+        ]
+        });
+        const context = await browser.newContext({
+        viewport: { width: 1280, height: 1000 },
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/122.0.0.0 Safari/537.36',
+        locale: 'id-ID'
+        });
+        const page = await context.newPage();
+        try {
+        await page.goto('https://www.google.com/aimode', { waitUntil: 'networkidle' });
+        const chatInput = page.locator('textarea.ITIRGe, textarea[placeholder="Tanyakan apa saja"]').first();
+        await chatInput.waitFor({ state: 'visible', timeout: 5000 });
+        const promptText = `Saya memiliki video berita dengan link: ${targetUrl}. Buatkan naskah intro berita (maksimal 15 detik) dengan gaya bahasa formal, profesional, hard news journalism, objektif, authoritative, dan credible. Struktur: Hook kuat -> Konteks utama -> Call to action menonton. Berikan juga Voice Over Script (naskah narasi siap dibacakan) and Social Media Metadata. Untuk kebutuhan visual pendukung, buatkan satu AI Image Prompt with Text yang sangat detail, spesifik, dan komprehensif untuk generator gambar AI modern seperti Midjourney/DALL-E 3 dengan rasio vertikal 9:16. Prompt ini wajib menggabungkan deskripsi komposisi visual latar belakang berita yang dramatis (style, lighting, camera angle, resolution) sekaligus instruksi tipografi teks overlay (maksimal 1-3 baris kalimat berita yang impactful, kontras, menggunakan tanda kutip, jenis font bold sans-serif, warna teks, posisi layout tengah atau bawah) agar menghasilkan satu kesatuan desain thumbnail vertikal yang utuh, optimal, tajam, mudah dibaca, dan sempurna. Format respons wajib menggunakan skema JSON berikut tanpa modifikasi struktur:
+{
+"intro_segment": {
+"voice_over_script": "[naskah intro]",
+"ai_image_prompt_with_text": "[Tulis di sini prompt gambar AI vertikal super detail, panjang, dan komprehensif yang menginstruksikan pembuatan visual latar belakang berita and pencetakan teks overlay secara langsung di atas gambar untuk hasil akhir thumbnail berita 9:16 yang sempurna]"
+},
+"social_media_metadata": {
+"title": "[judul menarik dan profesional]",
+"description": "[desktop lengkap dengan konteks dan call-to-action]",
+"tags": ["tag1", "tag2", "tag3"],
+"seo_keywords": ["keyword1", "keyword2"]
+}
+}`;
+        await chatInput.fill(promptText);
+        await chatInput.press('Enter');
+        console.log("Menunggu Google AI memproses dan menulis respons...");
+        let jsonFound = false;
+        let finalJsonText = "";
+        const startTime = Date.now();
+        const timeoutLimit = 60000;
+        while (Date.now() - startTime < timeoutLimit) {
+        const bodyText = await page.evaluate(() => document.body.innerText);
+        if (bodyText.includes('"social_media_metadata"') && bodyText.includes('}')) {
+        const jsonStartIndex = bodyText.indexOf('{\n"intro_segment"');
+        if (jsonStartIndex !== -1) {
+        const potentialJson = bodyText.substring(jsonStartIndex);
+        const jsonEndIndex = potentialJson.lastIndexOf('}');
+        if (jsonEndIndex !== -1) {
+        finalJsonText = potentialJson.substring(0, jsonEndIndex + 1);
+        jsonFound = true;
+        break;
+        }
+        }
+        }
+        await page.waitForTimeout(2000);
+        }
+        if (jsonFound) {
+        console.log("\n=================== HASIL RESPONS GOOGLE AI ===================");
+        console.log(finalJsonText);
+        console.log("===============================================================\n");
+        fs.mkdirSync('output', { recursive: true });
+        fs.writeFileSync('output/analysis.json', finalJsonText, 'utf8');
+        const parsedJson = JSON.parse(finalJsonText);
+        const voScript = parsedJson.intro_segment.voice_over_script;
+        fs.writeFileSync('tts-script.txt', voScript, 'utf8');
+        console.log("Naskah TTS berhasil diekstrak ke tts-script.txt");
+        } else {
+        throw new Error("Gagal mengekstrak struktur JSON lengkap dalam batas waktu 60 detik.");
+        }
+        } catch (error) {
+        console.error("Terjadi error:", error.message);
+        process.exit(1);
+        } finally {
+        await browser.close();
+        }
+        })();
+        EOF
+        node script.js
+
+    - name: Generate TTS Audio
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        VOICE_NAME: "Aoede"
+        LANGUAGE: "id-ID"
+        PARA_GAP: "1.0"
+      run: |
+        mkdir -p output
+        python3 << 'PYEOF'
+        import os
+        import wave
+        import struct
+        import time
+        import textwrap
+        from google import genai
+        from google.genai import types
+
+        API_KEY = os.environ["GEMINI_API_KEY"]
+        VOICE = os.environ["VOICE_NAME"]
+        LANGUAGE = os.environ["LANGUAGE"]
+        GAP = float(os.environ["PARA_GAP"])
+        SAMPLE_RATE = 24000
+        CHANNELS = 1
+        SAMPLE_WIDTH = 2
+
+        TARGET_WORDS_PER_CHUNK = 320
+        MAX_REQUESTS = 8
+        MODEL_NAME = "gemini-3.1-flash-tts-preview"
+
+        print("\n" + "="*70)
+        print(" GEMINI TTS - SMART CHUNKING + RATE LIMIT SAFE MODE ")
+        print("="*70)
+
+        with open("tts-script.txt", "r", encoding="utf8") as f:
+            raw = f.read().strip()
+
+        single_paragraphs = [p.strip() for p in raw.split("\n\n") if p.strip()]
+
+        if not single_paragraphs:
+            print("Error: No paragraphs found!")
+            exit(1)
+
+        paragraphs = []
+        current_chunk = []
+        current_words = 0
+
+        for p in single_paragraphs:
+            wc = len(p.split())
+            if current_words + wc > TARGET_WORDS_PER_CHUNK and current_chunk:
+                paragraphs.append("\n\n".join(current_chunk))
+                current_chunk = []
+                current_words = 0
+            current_chunk.append(p)
+            current_words += wc
+
+        if current_chunk:
+            paragraphs.append("\n\n".join(current_chunk))
+
+        while len(paragraphs) > MAX_REQUESTS:
+            merged = []
+            i = 0
+            while i < len(paragraphs):
+                if i + 1 < len(paragraphs):
+                    merged.append(paragraphs[i] + "\n\n" + paragraphs[i + 1])
+                    i += 2
+                else:
+                    merged.append(paragraphs[i])
+                    i += 1
+            paragraphs = merged
+
+        print(f"Voice            : {VOICE}")
+        print(f"Language         : {LANGUAGE}")
+        print(f"Total Batches    : {len(paragraphs)} (limit aman: {MAX_REQUESTS})")
+        print("Rate Limit Safe  : Active (Max 3 requests per minute)\n")
+
+        client = genai.Client(api_key=API_KEY)
+
+        def silence(sec):
+            n = int(SAMPLE_RATE * sec)
+            return struct.pack(f"<{n}h", *([0] * n))
+
+        def build_prompt(text, index, total):
+            if index == 0:
+                style = "Speak warmly and slowly."
+            elif index == total - 1:
+                style = "Speak gently and emotionally."
+            else:
+                style = "Speak naturally like a professional narrator."
+            return f"Language: {LANGUAGE}\n\n{style}\n\n{textwrap.dedent(text)}"
+
+        def call_tts(prompt_text):
+            return client.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt_text,
+                config=types.GenerateContentConfig(
+                    response_modalities=["AUDIO"],
+                    speech_config=types.SpeechConfig(
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                voice_name=VOICE
+                            )
+                        )
+                    )
+                )
+            )
+
+        pcm = []
+
+        for i, p in enumerate(paragraphs):
+            print("-"*70)
+            print(f"Processing Batch {i+1}/{len(paragraphs)}")
+            print(textwrap.shorten(p.replace('\n', ' '), 80))
+
+            prompt_text = build_prompt(p, i, len(paragraphs))
+            success = False
+
+            for retry in range(5):
+                try:
+                    response = call_tts(prompt_text)
+
+                    if response.candidates and response.candidates[0].content.parts:
+                        audio = response.candidates[0].content.parts[0].inline_data.data
+                        pcm.append(audio)
+                        print("✓ Audio generated")
+                        success = True
+                        break
+                    else:
+                        print("No audio data received, retrying...")
+                        time.sleep(15)
+
+                except Exception as e:
+                    msg = str(e)
+
+                    if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
+                        wait = 90 * (retry + 1)
+                        print(f"[429] Kena limit kuota RPM/RPD (attempt {retry+1}/5): {e}")
+                        print(f"Menunggu {wait}s sebelum retry (kuota perlu waktu untuk reset)...")
+                        time.sleep(wait)
+
+                    elif "503" in msg or "UNAVAILABLE" in msg or "500" in msg:
+                        wait = 20 * (retry + 1)
+                        print(f"[503/500] Server overload / model sibuk (attempt {retry+1}/5): {e}")
+                        print(f"Menunggu {wait}s sebelum retry...")
+                        time.sleep(wait)
+
+                    else:
+                        wait = 20 * (retry + 1)
+                        print(f"Error tak terduga (attempt {retry+1}/5): {e}")
+                        time.sleep(wait)
+
+            if not success:
+                print(f"Failed at batch {i+1} setelah semua retry gagal.")
+                exit(1)
+
+            if i != len(paragraphs) - 1:
+                pcm.append(silence(GAP))
+                print("⏳ Cooling down 21 seconds to respect Gemini Free Tier RPM Limit...")
+                time.sleep(21)
+
+        out = "output/audio.wav"
+        with wave.open(out, "wb") as wf:
+            wf.setnchannels(CHANNELS)
+            wf.setsampwidth(SAMPLE_WIDTH)
+            wf.setframerate(SAMPLE_RATE)
+            wf.writeframes(b"".join(pcm))
+
+        duration = sum(len(x) for x in pcm) / (SAMPLE_RATE * SAMPLE_WIDTH)
+
+        print("\n" + "="*70)
+        print("SUCCESSFULLY COMPLETED")
+        print("="*70)
+        print(f"Output   : {out}")
+        print(f"Duration : {duration:.1f} seconds\n")
+        PYEOF
+
+    - name: Generate Thumbnail Image
+      run: |
+        cat << 'EOF' > generate-images.js
+        const { chromium } = require("playwright");
+        const fs = require("fs");
+        (async () => {
+        try {
+        const analysis = JSON.parse(fs.readFileSync("output/analysis.json", "utf8"));
+        const imagePrompt = analysis.intro_segment.ai_image_prompt_with_text;
+        console.log("\n==============================");
+        console.log("START GENERATING THUMBNAIL (9:16)");
+        console.log("==============================");
+        console.log(`Prompt: ${imagePrompt}\n`);
+        const browser = await chromium.launch({ headless: true });
+        const page = await browser.newPage();
+        await page.goto("https://freegen.app/", { waitUntil: "domcontentloaded" });
+        await page.selectOption("#aspectRatioSelect", "9:16");
+        await page.fill("#prompt", imagePrompt);
+        await page.keyboard.press("Enter");
+        const imageContainer = page.locator("#imageContainer");
+        await imageContainer.waitFor({ timeout: 120000 });
+        const img = imageContainer.locator("img");
+        const src = await img.getAttribute("src");
+        const base64 = src.replace(/^data:image\/[a-z]+;base64,/, "");
+        const out = "output/thumbnail.jpg";
+        fs.writeFileSync(out, base64, "base64");
+        console.log(`✓ Thumbnail sukses disimpan di: ${out}`);
+        await browser.close();
+        } catch (err) {
+        console.error("Gagal melakukan generator gambar:", err.message);
+        process.exit(1);
+        }
+        })();
+        EOF
+        node generate-images.js
+
+    - name: Compile Video via FFmpeg
+      run: |
+        mkdir -p release
+        
+        echo "Mendapatkan durasi eksak audio via ffprobe..."
+        AUDIO_DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nocikey=1 output/audio.wav)
+        echo "Durasi Audio: $AUDIO_DURATION detik."
+        
+        echo "Langkah 1: Membuat video intro vertikal (1080x1920) berdurasi pas sesuai audio..."
+        ffmpeg -y -loop 1 -i output/thumbnail.jpg -i output/audio.wav \
+          -c:v libx264 -t "$AUDIO_DURATION" -pix_fmt yuv420p \
+          -vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2" \
+          -c:a aac -b:a 192k -shortest output/intro_segment.mp4
+          
+        echo "Langkah 2: Standardisasi format video input (input.mp4) ke vertikal 1080x1920..."
+        ffmpeg -y -i input.mp4 \
+          -vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2" \
+          -c:v libx264 -pix_fmt yuv420p -c:a aac -b:a 192k output/normalized_input.mp4
+          
+        echo "Langkah 3: Menggabungkan video intro dan video utama menjadi format vertikal penuh..."
+        ffmpeg -y -i output/intro_segment.mp4 -i output/normalized_input.mp4 \
+          -filter_complex "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]" \
+          -map "[outv]" -map "[outa]" -c:v libx264 -pix_fmt yuv420p -c:a aac release/final_news_video.mp4
+          
+        echo "=========================================================="
+        echo "PROSES BERHASIL: Video berita disimpan di release/final_news_video.mp4"
+        echo "=========================================================="
+
+    - name: Upload Final Video and Metadata Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: final-news-production-pack
+        path: |
+          release/final_news_video.mp4
+          output/analysis.json
+        retention-days: 7
