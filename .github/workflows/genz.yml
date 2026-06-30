@@ -67,7 +67,7 @@ jobs:
               console.log("Waiting for download button...");
               await page.waitForSelector("button.download", {
                 state: "visible",
-                timeout: 60000
+                timeout: 180000
               });
 
               const btn = page.locator("button.download");
@@ -82,10 +82,10 @@ jobs:
                 console.log("No popup detected.");
               }
 
-              await page.waitForTimeout(2000);
+              await page.waitForTimeout(180000);
 
               console.log("Starting download...");
-              const downloadPromise = page.waitForEvent("download", { timeout: 60000 });
+              const downloadPromise = page.waitForEvent("download", { timeout: 180000 });
               await btn.click({ force: true });
 
               const download = await downloadPromise;
