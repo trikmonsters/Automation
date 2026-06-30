@@ -133,14 +133,14 @@ jobs:
         break;
         }
         } catch (e) {
-        // Teks JSON belum selesai diketik sepenuhnya, lanjutkan looping
+        // Menunggu teks selesai diketik penuh
         }
         }
         await page.waitForTimeout(2000);
         }
         
         if (!finalJsonText) {
-        console.log("Peringatan: Batas waktu habis atau format JSON tidak terisolasi sempurna. Mencoba ekstraksi paksa dari seluruh teks teks...");
+        console.log("Peringatan: Batas waktu habis atau format JSON tidak terisolasi sempurna. Mencoba ekstraksi paksa...");
         const fallbackText = await page.evaluate(() => document.body.innerText);
         const startIdx = fallbackText.indexOf('{');
         const endIdx = fallbackText.lastIndexOf('}');
@@ -149,7 +149,7 @@ jobs:
         try {
         parsedJson = JSON.parse(finalJsonText);
         } catch(err) {
-        console.log("Gagal melakukan parse total teks cadangan. Membuat JSON struktur tiruan agar sistem tidak mogok di tengah jalan.");
+        console.log("Gagal melakukan parse total teks cadangan. Membuat JSON struktur tiruan.");
         parsedJson = {
         intro_segment: {
         voice_over_script: "Halo, selamat datang kembali di kabar berita terkini. Mari simak informasi selengkapnya.",
@@ -236,22 +236,9 @@ jobs:
         if current_chunk:
             paragraphs.append("\n\n".join(current_chunk))
 
-        while len(paragraphs) > MAX_REQUESTS:
-            merged = []
-            i = 0
-            while i < len(paragraphs):
-                if i + 1 < len(paragraphs):
-                    merged.append(paragraphs[i] + "\n\n" + paragraphs[i + 1])
-                    i += 2
-                else:
-                    merged.append(paragraphs[i])
-                    i += 1
-            paragraphs = merged
-
         print(f"Voice            : {VOICE}")
         print(f"Language         : {LANGUAGE}")
-        print(f"Total Batches    : {len(paragraphs)} (limit aman: {MAX_REQUESTS})")
-        print("Rate Limit Safe  : Active (Max 3 requests per minute)\n")
+        print(f"Total Batches    : {len(paragraphs)}")
 
         client = genai.Client(api_key=API_KEY)
 
@@ -260,12 +247,7 @@ jobs:
             return struct.pack(f"<{n}h", *([0] * n))
 
         def build_prompt(text, index, total):
-            if index == 0:
-                style = "Speak warmly and slowly."
-            elif index == total - 1:
-                style = "Speak gently and emotionally."
-            else:
-                style = "Speak naturally like a professional narrator."
+            style = "Speak naturally like a professional news anchor narrator."
             return f"Language: {LANGUAGE}\n\n{style}\n\n{textwrap.dedent(text)}"
 
         def call_tts(prompt_text):
@@ -289,53 +271,44 @@ jobs:
         for i, p in enumerate(paragraphs):
             print("-"*70)
             print(f"Processing Batch {i+1}/{len(paragraphs)}")
-            print(textwrap.shorten(p.replace('\n', ' '), 80))
-
             prompt_text = build_prompt(p, i, len(paragraphs))
             success = False
 
             for retry in range(5):
                 try:
                     response = call_tts(prompt_text)
-
+                    audio_data = None
+                    
+                    # Cek eksistensi part data audio menggunakan skema ter-update
                     if response.candidates and response.candidates[0].content.parts:
-                        audio = response.candidates[0].content.parts[0].inline_data.data
-                        pcm.append(audio)
-                        print("✓ Audio generated")
+                        part = response.candidates[0].content.parts[0]
+                        if hasattr(part, 'inline_data') and part.inline_data:
+                            audio_data = part.inline_data.data
+                        elif hasattr(part, 'bytes') and part.bytes:
+                            audio_data = part.bytes
+                        elif isinstance(part, dict) and 'inline_data' in part:
+                            audio_data = part['inline_data'].get('data')
+
+                    if audio_data:
+                        pcm.append(audio_data)
+                        print("✓ Audio generated successfully")
                         success = True
                         break
                     else:
-                        print("No audio data received, retrying...")
-                        time.sleep(15)
+                        print(f"Retrying ({retry+1}/5): Format respons tidak dikenali...")
+                        time.sleep(10)
 
                 except Exception as e:
-                    msg = str(e)
-
-                    if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
-                        wait = 90 * (retry + 1)
-                        print(f"[429] Kena limit kuota RPM/RPD (attempt {retry+1}/5): {e}")
-                        print(f"Menunggu {wait}s sebelum retry (kuota perlu waktu untuk reset)...")
-                        time.sleep(wait)
-
-                    elif "503" in msg or "UNAVAILABLE" in msg or "500" in msg:
-                        wait = 20 * (retry + 1)
-                        print(f"[503/500] Server overload / model sibuk (attempt {retry+1}/5): {e}")
-                        print(f"Menunggu {wait}s sebelum retry...")
-                        time.sleep(wait)
-
-                    else:
-                        wait = 20 * (retry + 1)
-                        print(f"Error tak terduga (attempt {retry+1}/5): {e}")
-                        time.sleep(wait)
+                    print(f"Error pada attempt {retry+1}: {e}")
+                    time.sleep(15)
 
             if not success:
-                print(f"Failed at batch {i+1} setelah semua retry gagal.")
+                print(f"Failed at batch {i+1} setelah semua retry.")
                 exit(1)
 
             if i != len(paragraphs) - 1:
                 pcm.append(silence(GAP))
-                print("⏳ Cooling down 21 seconds to respect Gemini Free Tier RPM Limit...")
-                time.sleep(21)
+                time.sleep(5)
 
         out = "output/audio.wav"
         with wave.open(out, "wb") as wf:
@@ -344,13 +317,7 @@ jobs:
             wf.setframerate(SAMPLE_RATE)
             wf.writeframes(b"".join(pcm))
 
-        duration = sum(len(x) for x in pcm) / (SAMPLE_RATE * SAMPLE_WIDTH)
-
-        print("\n" + "="*70)
-        print("SUCCESSFULLY COMPLETED")
-        print("="*70)
-        print(f"Output   : {out}")
-        print(f"Duration : {duration:.1f} seconds\n")
+        print(f"\n✓ Audio sukses disimpan: {out}\n")
         PYEOF
 
     - name: Generate Thumbnail Image
