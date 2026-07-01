@@ -98,7 +98,7 @@ jobs:
         await page.goto('https://www.google.com/aimode', { waitUntil: 'networkidle' });
         const chatInput = page.locator('textarea.ITIRGe, textarea[placeholder="Tanyakan apa saja"]').first();
         await chatInput.waitFor({ state: 'visible', timeout: 5000 });
-        const promptText = `Saya memiliki video berita dengan link: ${targetUrl}. Buatkan naskah intro berita (maksimal 15 detik) dengan gaya bahasa formal, profesional, hard news journalism, objektif, authoritative, dan credible. Struktur: Hook kuat -> Konteks utama -> Call to action menonton. Berikan juga Voice Over Script (naskah narasi siap dibacakan) and Social Media Metadata. Untuk kebutuhan visual pendukung, buatkan satu AI Image Prompt with Text yang sangat detail, spesifik, dan komprehensif untuk generator gambar AI modern seperti Midjourney/DALL-E 3 dengan rasio vertikal 9:16. Prompt ini wajib menggabungkan deskripsi komposisi visual latar belakang berita yang dramatis (style, lighting, camera angle, resolution) sekaligus instruksi tipografi teks overlay (maksimal 1-3 baris kalimat berita yang impactful, kontras, menggunakan tanda kutip, jenis font bold sans-serif, warna teks, posisi layout tengah atau bawah) agar menghasilkan satu kesatuan desain thumbnail vertikal yang utuh, optimal, tajam, mudah dibaca, dan sempurna. Format respons wajib menggunakan skema JSON berikut tanpa modifikasi struktur:
+        const promptText = `Saya memiliki video berita dengan link: ${targetUrl}. Buatkan naskah intro berita (maksimal 15 detik) dengan gaya bahasa formal, profesional, hard news journalism, objektif, authoritative, dan credible. Struktur: Hook kuat -> Konteks utama -> Call to action menonton. Berikan juga Voice Over Script (naskah narasi siap dibacakan) and Social Media Metadata. Untuk kebutuhan visual pendukung, buatkan satu AI Image Prompt with Text yang sangat detail, spesifik, dan komprehensif untuk generator gambar AI modern seperti Midjourney/DALL-E 3 dengan rasio vertikal 9:16. Prompt ini wajib menggabungkan deskripsi komposisi visual latar belakang berita yang dramatis (style, lighting, camera angle, resolution) sekaligus instruksi tipografi teks overlay (maksimal 1-3 baris kalimat berita yang impactful, kontras, menggunakan tanda kutip, jenis font bold sans-serif, warna teks, posisi layout tengah atau bawah) agar menghasilkan satu kesatuan desain thumbnail vertikal yang utuh, optimal, tajam, mudah dibaca, dan sempurna. Format respons wajib skema JSON. berikut contoh struktur JSON yang harus anda buat:
         {
         "intro_segment": {
         "voice_over_script": "Selamat datang di kilas berita utama. Hari ini kami merangkum informasi paling krusial langsung dari sumber terpercaya untuk Anda. Tetap bersama kami selengkapnya.",
@@ -128,13 +128,12 @@ jobs:
         const candidateStr = bodyText.substring(startIdx, endIdx + 1);
         try {
         parsedJson = JSON.parse(candidateStr);
-        // Memastikan tidak mengambil struktur default bawaan prompt
         if (parsedJson.intro_segment && parsedJson.intro_segment.voice_over_script && !parsedJson.intro_segment.voice_over_script.includes("[naskah")) {
         finalJsonText = candidateStr;
         break;
         }
         } catch (e) {
-        // Menunggu streaming teks selesai
+        // Tunggu parsing selesai
         }
         }
         await page.waitForTimeout(2000);
@@ -201,7 +200,6 @@ jobs:
         with open("tts-script.txt", "r", encoding="utf8") as f:
             raw_text = f.read().strip()
 
-        # Pembersihan total jika ada sisa kurung siku dari format prompt
         raw_text = raw_text.replace("[", "").replace("]", "")
         if not raw_text or len(raw_text.split()) < 3:
             raw_text = "Selamat datang di sorotan berita terkini. Mari kita simak informasi selengkapnya secara mendalam."
@@ -233,8 +231,6 @@ jobs:
         for retry in range(5):
             try:
                 response = call_tts(raw_text)
-                
-                # Ekstraksi menggunakan iterator part yang lebih aman
                 if response.candidates and response.candidates[0].content.parts:
                     for part in response.candidates[0].content.parts:
                         if hasattr(part, 'inline_data') and part.inline_data:
@@ -256,7 +252,7 @@ jobs:
                 time.sleep(15)
 
         if not success or len(audio_bytes) == 0:
-            print("Gagal memanggil API TTS. Membuat audio hening cadangan (5 detik) agar proses pipeline video tidak putus.")
+            print("Gagal memanggil API TTS. Membuat audio hening cadangan (5 detik)...")
             n = int(SAMPLE_RATE * 5)
             audio_bytes = struct.pack(f"<{n}h", *([0] * n))
 
@@ -309,9 +305,10 @@ jobs:
     - name: Compile Video via FFmpeg
       run: |
         mkdir -p release
+        mkdir -p output
         
         echo "Mendapatkan durasi eksak audio via ffprobe..."
-        AUDIO_DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nocikey=1 output/audio.wav)
+        AUDIO_DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 output/audio.wav)
         echo "Durasi Audio: $AUDIO_DURATION detik."
         
         echo "Langkah 1: Membuat video intro vertikal (1080x1920) berdurasi pas sesuai audio..."
