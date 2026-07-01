@@ -99,18 +99,18 @@ jobs:
         const chatInput = page.locator('textarea.ITIRGe, textarea[placeholder="Tanyakan apa saja"]').first();
         await chatInput.waitFor({ state: 'visible', timeout: 5000 });
         const promptText = `Saya memiliki video berita dengan link: ${targetUrl}. Buatkan naskah intro berita (maksimal 15 detik) dengan gaya bahasa formal, profesional, hard news journalism, objektif, authoritative, dan credible. Struktur: Hook kuat -> Konteks utama -> Call to action menonton. Berikan juga Voice Over Script (naskah narasi siap dibacakan) and Social Media Metadata. Untuk kebutuhan visual pendukung, buatkan satu AI Image Prompt with Text yang sangat detail, spesifik, dan komprehensif untuk generator gambar AI modern seperti Midjourney/DALL-E 3 dengan rasio vertikal 9:16. Prompt ini wajib menggabungkan deskripsi komposisi visual latar belakang berita yang dramatis (style, lighting, camera angle, resolution) sekaligus instruksi tipografi teks overlay (maksimal 1-3 baris kalimat berita yang impactful, kontras, menggunakan tanda kutip, jenis font bold sans-serif, warna teks, posisi layout tengah atau bawah) agar menghasilkan satu kesatuan desain thumbnail vertikal yang utuh, optimal, tajam, mudah dibaca, dan sempurna. Format respons wajib menggunakan skema JSON berikut tanpa modifikasi struktur:
-{
-"intro_segment": {
-"voice_over_script": "Selamat datang di kilas berita utama. Hari ini kami merangkum informasi paling krusial langsung dari sumber terpercaya untuk Anda. Tetap bersama kami selengkapnya.",
-"ai_image_prompt_with_text": "[Tulis di sini prompt gambar AI vertikal super detail, panjang, dan komprehensif yang menginstruksikan pembuatan visual latar belakang berita and pencetakan teks overlay secara langsung di atas gambar untuk hasil akhir thumbnail berita 9:16 yang sempurna]"
-},
-"social_media_metadata": {
-"title": "[judul menarik dan profesional]",
-"description": "[desktop lengkap dengan konteks dan call-to-action]",
-"tags": ["tag1", "tag2", "tag3"],
-"seo_keywords": ["keyword1", "keyword2"]
-}
-}`;
+        {
+        "intro_segment": {
+        "voice_over_script": "Selamat datang di kilas berita utama. Hari ini kami merangkum informasi paling krusial langsung dari sumber terpercaya untuk Anda. Tetap bersama kami selengkapnya.",
+        "ai_image_prompt_with_text": "[Tulis di sini prompt gambar AI vertikal super detail, panjang, dan komprehensif yang menginstruksikan pembuatan visual latar belakang berita and pencetakan teks overlay secara langsung di atas gambar untuk hasil akhir thumbnail berita 9:16 yang sempurna]"
+        },
+        "social_media_metadata": {
+        "title": "[judul menarik dan profesional]",
+        "description": "[desktop lengkap dengan konteks dan call-to-action]",
+        "tags": ["tag1", "tag2", "tag3"],
+        "seo_keywords": ["keyword1", "keyword2"]
+        }
+        }`;
         await chatInput.fill(promptText);
         await chatInput.press('Enter');
         console.log("Menunggu Google AI memproses dan menulis respons...");
