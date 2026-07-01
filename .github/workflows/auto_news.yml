@@ -98,20 +98,47 @@ jobs:
         await page.goto('https://www.google.com/aimode', { waitUntil: 'networkidle' });
         const chatInput = page.locator('textarea.ITIRGe, textarea[placeholder="Tanyakan apa saja"]').first();
         await chatInput.waitFor({ state: 'visible', timeout: 5000 });
-        const promptText = `Saya memiliki video berita dengan link: ${targetUrl}. Buatkan naskah intro berita (maksimal 15 detik) dengan gaya bahasa formal, profesional, hard news journalism, objektif, authoritative, dan credible. Struktur: Hook kuat -> Konteks utama -> Call to action menonton. Berikan juga Voice Over Script (naskah narasi siap dibacakan) and Social Media Metadata. Untuk kebutuhan visual pendukung, buatkan satu AI Image Prompt with Text yang sangat detail, spesifik, dan komprehensif untuk generator gambar AI modern seperti Midjourney/DALL-E 3 dengan rasio vertikal 9:16. Prompt ini wajib menggabungkan deskripsi komposisi visual latar belakang berita yang dramatis (style, lighting, camera angle, resolution) sekaligus instruksi tipografi teks overlay (maksimal 1-3 baris kalimat berita yang impactful, kontras, menggunakan tanda kutip, jenis font bold sans-serif, warna teks, posisi layout tengah atau bawah) agar menghasilkan satu kesatuan desain thumbnail vertikal yang utuh, optimal, tajam, mudah dibaca, dan sempurna. Format respons wajib skema JSON. berikut contoh struktur JSON yang harus anda buat:
+        const prompt = `
+        Saya memiliki video berita berikut:
+        ${process.env.YOUTUBE_URL}
+        
+        Tugas Anda:
+        1. Analisis isi video.
+        2. Buat intro berita maksimal 15 detik.
+        3. Gaya bahasa:
+        - Formal
+        - Hard News Journalism
+        - Objektif
+        - Profesional
+        - Authority
+        - Credible
+        
+        Buat juga:
+        - AI Image Prompt sangat detail
+        - Metadata YouTube SEO
+        
+        Balas HANYA JSON.
+        JANGAN menggunakan markdown.
+        JANGAN menggunakan tanda \`\`\`
+        JANGAN mengembalikan placeholder.
+        JANGAN menyalin contoh.
+        
+        Gunakan schema berikut:
+        
         {
-        "intro_segment": {
-        "voice_over_script": "Selamat datang di kilas berita utama. Hari ini kami merangkum informasi paling krusial langsung dari sumber terpercaya untuk Anda. Tetap bersama kami selengkapnya.",
-        "ai_image_prompt_with_text": "[Tulis di sini prompt gambar AI vertikal super detail, panjang, dan komprehensif yang menginstruksikan pembuatan visual latar belakang berita and pencetakan teks overlay secara langsung di atas gambar untuk hasil akhir thumbnail berita 9:16 yang sempurna]"
-        },
-        "social_media_metadata": {
-        "title": "[judul menarik dan profesional]",
-        "description": "[desktop lengkap dengan konteks dan call-to-action]",
-        "tags": ["tag1", "tag2", "tag3"],
-        "seo_keywords": ["keyword1", "keyword2"]
+          "intro_segment": {
+            "voice_over_script": string,
+            "ai_image_prompt_with_text": string
+          },
+          "social_media_metadata": {
+            "title": string,
+            "description": string,
+            "tags": string[],
+            "seo_keywords": string[]
+          }
         }
-        }`;
-        await chatInput.fill(promptText);
+        `;
+        await chatInput.fill(prompt);
         await chatInput.press('Enter');
         console.log("Menunggu Google AI memproses dan menulis respons...");
         let finalJsonText = "";
@@ -304,32 +331,54 @@ jobs:
 
     - name: Compile Video via FFmpeg
       run: |
-        mkdir -p release
         mkdir -p output
-        
-        echo "Mendapatkan durasi eksak audio via ffprobe..."
+        mkdir -p release
+    
+        echo "Mengambil durasi audio..."
         AUDIO_DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 output/audio.wav)
-        echo "Durasi Audio: $AUDIO_DURATION detik."
-        
-        echo "Langkah 1: Membuat video intro vertikal (1080x1920) berdurasi pas sesuai audio..."
-        ffmpeg -y -loop 1 -i output/thumbnail.jpg -i output/audio.wav \
-          -c:v libx264 -t "$AUDIO_DURATION" -pix_fmt yuv420p \
-          -vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2" \
-          -c:a aac -b:a 192k -shortest output/intro_segment.mp4
-          
-        echo "Langkah 2: Standardisasi format video input (input.mp4) ke vertikal 1080x1920..."
-        ffmpeg -y -i input.mp4 \
-          -vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2" \
-          -c:v libx264 -pix_fmt yuv420p -c:a aac -b:a 192k output/normalized_input.mp4
-          
-        echo "Langkah 3: Menggabungkan video intro dan video utama menjadi format vertikal penuh..."
-        ffmpeg -y -i output/intro_segment.mp4 -i output/normalized_input.mp4 \
-          -filter_complex "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]" \
-          -map "[outv]" -map "[outa]" -c:v libx264 -pix_fmt yuv420p -c:a aac release/final_news_video.mp4
-          
-        echo "=========================================================="
-        echo "PROSES BERHASIL: Video berita disimpan di release/final_news_video.mp4"
-        echo "=========================================================="
+    
+        echo "== Membuat intro =="
+    
+        ffmpeg -y \
+          -loop 1 \
+          -i output/thumbnail.jpg \
+          -i output/audio.wav \
+          -vf "scale=1080:1920:force_original_aspect_ratio=decrease,\
+          pad=1080:1920:(ow-iw)/2:(oh-ih)/2,\
+          setsar=1" \
+          -t "$AUDIO_DURATION" \
+          -shortest \
+          -c:v libx264 \
+          -pix_fmt yuv420p \
+          -c:a aac \
+          -b:a 192k \
+          output/intro_segment.mp4
+    
+        echo "== Normalisasi video utama =="
+    
+        ffmpeg -y \
+          -i input.mp4 \
+          -vf "scale=1080:1920:force_original_aspect_ratio=decrease,\
+          pad=1080:1920:(ow-iw)/2:(oh-ih)/2,\
+          setsar=1" \
+          -c:v libx264 \
+          -pix_fmt yuv420p \
+          -c:a aac \
+          -b:a 192k \
+          output/main.mp4
+    
+        echo "== Menggabungkan =="
+    
+        printf "file 'output/intro_segment.mp4'\nfile 'output/main.mp4'\n" > list.txt
+    
+        ffmpeg -y \
+          -f concat \
+          -safe 0 \
+          -i list.txt \
+          -c copy \
+          release/final_news_video.mp4
+    
+        echo "Selesai."
 
     - name: Upload Final Video and Metadata Artifacts
       uses: actions/upload-artifact@v4
