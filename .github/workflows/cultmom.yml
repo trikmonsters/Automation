@@ -363,7 +363,7 @@ jobs:
       - name: Upload via Buffer API
         if: ${{ github.event.inputs.post_to_buffer == 'true' }}
         env:
-          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_API_KEY: ${{ secrets.BUFFER_V2 }}
           BUFFER_CHANNEL_ID: "6a471f4e5ab6d2f1069b6f5e"
           VIDEO_URL: ${{ env.VIDEO_URL }}
         run: |
