@@ -1,0 +1,350 @@
+name: Auto IG & Buffer Post
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'Masukkan URL Video Media / Instagram'
+        required: true
+        default: ''
+      caption:
+        description: 'Caption untuk postingan Buffer'
+        required: false
+        default: 'Check out this awesome video! 🔥 #viral #reels'
+      post_to_buffer:
+        description: 'Langsung upload ke Buffer?'
+        required: false
+        default: 'true'
+
+permissions:
+  contents: write
+
+jobs:
+  process-video:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Python Dependencies (Including yt-dlp)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libgomp1
+          pip install yt-dlp opencv-python-headless numpy torch torchvision easyocr
+
+      - name: Install Playwright Dependencies
+        run: |
+          npm init -y
+          npm install playwright playwright-extra puppeteer-extra-plugin-stealth
+          npx playwright install chromium --with-deps
+
+      - name: Download Video with yt-dlp
+        run: |
+          echo "⬇️ Downloading video using yt-dlp..."
+          yt-dlp -f "best[ext=mp4]/best" --merge-output-format mp4 -o "video.mp4" "${{ github.event.inputs.video_url }}"
+
+      - name: Run OpenCV Detection & EasyOCR
+        run: |
+          cat << 'EOF' > process.py
+          import cv2
+          import numpy as np
+          import easyocr
+
+          video_path = "video.mp4"
+          cap = cv2.VideoCapture(video_path)
+          fps = cap.get(cv2.CAP_PROP_FPS)
+          cap.set(cv2.CAP_PROP_POS_FRAMES, int(fps * 2))
+          ret, frame = cap.read()
+          cap.release()
+
+          if not ret:
+              exit(1)
+
+          gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+          _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
+          contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+          full_h, full_w = frame.shape[0], frame.shape[1]
+
+          if contours:
+              largest_contour = max(contours, key=cv2.contourArea)
+              x, y, w, h = cv2.boundingRect(largest_contour)
+              
+              with open('crop_params.txt', 'w') as f:
+                  f.write(f"CROP_W={w}\n")
+                  f.write(f"CROP_H={h}\n")
+                  f.write(f"CROP_X={x}\n")
+                  f.write(f"CROP_Y={y}\n")
+              
+              if y > 10:
+                  text_area = frame[0:y, 0:full_w]
+              else:
+                  text_area = frame[0:int(full_h*0.2), 0:full_w]
+          else:
+              with open('crop_params.txt', 'w') as f:
+                  f.write(f"CROP_W={full_w}\n")
+                  f.write(f"CROP_H={full_h}\n")
+                  f.write(f"CROP_X=0\n")
+                  f.write(f"CROP_Y=0\n")
+              text_area = frame[0:int(full_h*0.2), 0:full_w]
+
+          try:
+              reader = easyocr.Reader(['en'])
+              ocr_results = reader.readtext(text_area, detail=0)
+              detected_text = " ".join(ocr_results).replace("\n", " ").strip()
+          except Exception:
+              detected_text = ""
+
+          if not detected_text or len(detected_text) < 3:
+              detected_text = "Amazing video content highlights"
+              
+          with open('detected_text.txt', 'w', encoding='utf-8') as f:
+              f.write(detected_text)
+          EOF
+          python process.py
+          cat crop_params.txt >> $GITHUB_ENV
+
+      - name: Run Playwright ChatGPT Script
+        run: |
+          cat << 'EOF' > script.js
+          const { chromium } = require('playwright-extra');
+          const stealth = require('puppeteer-extra-plugin-stealth')();
+          const fs = require('fs');
+
+          chromium.use(stealth);
+
+          function wrapText(text, maxChars = 40) {
+            const words = text.split(' ');
+            let lines = [];
+            let currentLine = '';
+
+            for (let word of words) {
+              if ((currentLine + word).length > maxChars) {
+                lines.push(currentLine.trim());
+                currentLine = word + ' ';
+              } else {
+                currentLine += word + ' ';
+              }
+            }
+            if (currentLine.trim()) {
+              lines.push(currentLine.trim());
+            }
+            return lines.join('\n');
+          }
+
+          (async () => {
+            let detectedText = "Amazing video content highlights";
+            if (fs.existsSync('detected_text.txt')) {
+                detectedText = fs.readFileSync('detected_text.txt', 'utf8').trim();
+            }
+
+            const prompt = `Convert the following text into a short video hook that is controversial or funny: "${detectedText}"
+            Respond ONLY with a raw JSON array containing exactly 2 strings, example: ["Hook 1", "Hook 2"]. Do not include markdown blocks, do not include "json" formatting text, just the raw array.`;
+
+            const browser = await chromium.launch({ headless: true });
+            const context = await browser.newContext({
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+              viewport: { width: 1280, height: 720 }
+            });
+            const page = await context.newPage();
+
+            try {
+              await page.goto('https://chatgpt.com/', { waitUntil: 'networkidle' });
+
+              const inputSelector = 'div#prompt-textarea, textarea[placeholder*="Message ChatGPT"], [contenteditable="true"]';
+              await page.waitForSelector(inputSelector, { timeout: 30000 });
+              
+              await page.fill(inputSelector, prompt);
+              await page.press(inputSelector, 'Enter');
+              
+              await page.waitForTimeout(15000);
+
+              const responseSelector = 'article [data-message-author-role="assistant"], main div.markdown, .agent-turn';
+              await page.waitForSelector(responseSelector, { timeout: 25000 });
+              
+              const responses = await page.locator(responseSelector).all();
+              if (responses.length > 0) {
+                let lastResponseText = await responses[responses.length - 1].innerText();
+                
+                if (lastResponseText.includes('```')) {
+                    const parts = lastResponseText.split('```');
+                    lastResponseText = parts[1];
+                    if (lastResponseText.startsWith('json')) {
+                        lastResponseText = lastResponseText.substring(4);
+                    }
+                }
+                lastResponseText = lastResponseText.trim();
+
+                try {
+                    const parsedJson = JSON.parse(lastResponseText);
+                    fs.writeFileSync('hasil_ai.json', JSON.stringify(parsedJson, null, 2), 'utf8');
+                    
+                    let textOverlay = detectedText;
+                    if (Array.isArray(parsedJson)) {
+                        textOverlay = parsedJson[0] || detectedText;
+                    } else if (typeof parsedJson === 'object') {
+                        textOverlay = Object.values(parsedJson)[0] || detectedText;
+                    }
+                    
+                    fs.writeFileSync('text_overlay.txt', wrapText(textOverlay), 'utf8');
+                } catch (e) {
+                    const cleanText = lastResponseText.replace(/[\[\]"]/g, '').split('\n')[0] || detectedText;
+                    fs.writeFileSync('hasil_ai.json', JSON.stringify([cleanText, cleanText], null, 2));
+                    fs.writeFileSync('text_overlay.txt', wrapText(cleanText), 'utf8');
+                }
+
+              } else {
+                throw new Error("Response element not found");
+              }
+
+            } catch (error) {
+              fs.writeFileSync('hasil_ai.json', JSON.stringify([detectedText, detectedText], null, 2));
+              fs.writeFileSync('text_overlay.txt', wrapText(detectedText), 'utf8');
+            } finally {
+              await browser.close();
+            }
+          })();
+          EOF
+          node script.js
+
+      - name: Process Video with FFmpeg
+        run: |
+          curl -L -o Arial.ttf "https://github.com/matthieua/WOW-Fonts/raw/master/Arial.ttf"
+
+          ffmpeg -i "video.mp4" \
+            -filter_complex "[0:v]crop=${{ env.CROP_W }}:${{ env.CROP_H }}:${{ env.CROP_X }}:${{ env.CROP_Y }}, \
+                             scale=1080:-1, \
+                             pad=1080:1920:(ow-iw)/2:(oh-ih)/2:white, \
+                             drawtext=fontfile=Arial.ttf:textfile=text_overlay.txt:x=(w-text_w)/2:y=140:fontsize=45:fontcolor=black" \
+            -c:a copy output.mp4
+
+          mv output.mp4 video.mp4
+
+
+      - name: Delete old release
+        if: ${{ github.event.inputs.post_to_buffer == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          echo "🗑️ Checking for old releases..."
+          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases \
+            --jq '.[] | select(.tag_name == "buffer_video") | .id' 2>/dev/null || echo "")
+          if [ -n "$RELEASE_ID" ]; then
+            echo "Deleting release ID: $RELEASE_ID"
+            gh api -X DELETE repos/${{ github.repository }}/releases/$RELEASE_ID
+            sleep 2
+            gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/buffer_video || true
+            sleep 2
+            echo "✅ Old release deleted"
+          else
+            echo "ℹ️ No old release found"
+          fi
+
+      - name: Upload video to GitHub Release
+        if: ${{ github.event.inputs.post_to_buffer == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          echo "📦 Creating GitHub release..."
+          gh release create buffer_video \
+            --repo "${{ github.repository }}" \
+            --title "Buffer Video (Temporary Hosting)" \
+            --notes "Temporary hosting for Buffer API. Automatically replaced on next run." \
+            video.mp4
+          echo "✅ Release created successfully"
+
+      - name: Get video URL from release
+        if: ${{ github.event.inputs.post_to_buffer == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          sleep 5
+          VIDEO_URL=$(gh api repos/${{ github.repository }}/releases/tags/buffer_video \
+            --jq '.assets[0].browser_download_url')
+          if [ -z "$VIDEO_URL" ] || [ "$VIDEO_URL" = "null" ]; then
+            echo "❌ Failed to get video URL from release"
+            exit 1
+          fi
+          echo "VIDEO_URL=${VIDEO_URL}" >> $GITHUB_ENV
+          echo "✅ Video URL: ${VIDEO_URL}"
+
+      - name: Upload via Buffer API
+        if: ${{ github.event.inputs.post_to_buffer == 'true' }}
+        env:
+          BUFFER_V2: ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_CHANNEL_ID: "6a471f4e5ab6d2f1069b6f5e"
+          POST_CAPTION: ${{ github.event.inputs.caption }}
+          VIDEO_URL: ${{ env.VIDEO_URL }}
+        run: |
+          set -e
+          echo "📤 Sending to Buffer API..."
+          python3 - <<'PYEOF'
+          import os
+          import json
+          import sys
+          import urllib.request
+          import urllib.error
+          from datetime import datetime, timezone, timedelta
+
+          api_key = os.environ["BUFFER_V2"]
+          channel_id = os.environ["BUFFER_CHANNEL_ID"]
+          video_url = os.environ["VIDEO_URL"]
+          caption = os.environ.get("POST_CAPTION", "")
+
+          # Jadwalkan 2 menit dari sekarang agar siap di proses oleh Buffer
+          due_at = (
+              datetime.now(timezone.utc) + timedelta(minutes=2)
+          ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+          print(f"📅 Scheduled time : {due_at}")
+          print(f"🎬 Video URL      : {video_url}")
+
+          mutation = (
+              "mutation { createPost(input: {"
+              "  text: " + json.dumps(caption) + ","
+              "  channelId: " + json.dumps(channel_id) + ","
+              "  schedulingType: automatic,"
+              "  mode: customScheduled,"
+              "  dueAt: " + json.dumps(due_at) + ","
+              "  assets: [{ video: { url: " + json.dumps(video_url) + " } }]"
+              "}) {"
+              "  ... on PostActionSuccess { post { id dueAt } }"
+              "  ... on MutationError { message }"
+              "} }"
+          )
+
+          payload = json.dumps({"query": mutation}).encode("utf-8")
+
+          req = urllib.request.Request(
+              "https://api.buffer.com/graphql",
+              data=payload,
+              headers={
+                  "Content-Type": "application/json",
+                  "Authorization": "Bearer " + api_key,
+              }
+          )
+
+          try:
+              with urllib.request.urlopen(req) as res:
+                  body = json.loads(res.read().decode("utf-8"))
+          except urllib.error.HTTPError as e:
+              print(f"HTTP Error {e.code}: {e.read().decode()}")
+              sys.exit(1)
+
+          print("✅ Buffer API Response:")
+          print(json.dumps(body, indent=2))
+          PYEOF
