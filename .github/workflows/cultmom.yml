@@ -6,14 +6,14 @@ on:
       video_url:
         description: 'Masukkan URL Video Media / Instagram'
         required: true
-        default: ''
+        default: 'https://www.instagram.com/reel/DTJ6u-JE-Ta/'
       caption:
         description: 'Caption untuk postingan Buffer'
         required: false
         default: 'Check out this awesome video! 🔥 #viral #reels'
       post_to_buffer:
         description: 'Langsung upload ke Buffer?'
-        required: false
+        required: true
         default: 'true'
 
 permissions:
@@ -37,11 +37,11 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install Python Dependencies (Including yt-dlp)
+      - name: Install Python Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg libgomp1
-          pip install yt-dlp opencv-python-headless numpy torch torchvision easyocr
+          pip install opencv-python-headless numpy torch torchvision easyocr
 
       - name: Install Playwright Dependencies
         run: |
@@ -49,10 +49,63 @@ jobs:
           npm install playwright playwright-extra puppeteer-extra-plugin-stealth
           npx playwright install chromium --with-deps
 
-      - name: Download Video with yt-dlp
+      - name: Download Video via Playwright (SSSInstagram)
         run: |
-          echo "⬇️ Downloading video using yt-dlp..."
-          yt-dlp -f "best[ext=mp4]/best" --merge-output-format mp4 -o "video.mp4" "${{ github.event.inputs.video_url }}"
+          cat << 'EOF' > download_ig.js
+          const { chromium } = require('playwright-extra');
+          const stealth = require('puppeteer-extra-plugin-stealth')();
+          const fs = require('fs');
+
+          chromium.use(stealth);
+
+          (async () => {
+            const igUrl = process.argv[2] || "https://www.instagram.com/reel/DTJ6u-JE-Ta/";
+            console.log(`🚀 Memulai proses unduh untuk URL: ${igUrl}`);
+
+            const browser = await chromium.launch({ headless: true });
+            const context = await browser.newContext({
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+              viewport: { width: 1280, height: 720 }
+            });
+            const page = await context.newPage();
+
+            try {
+              console.log('🌐 Membuka sssinstagram.com...');
+              await page.goto('https://sssinstagram.com/reels-downloader', { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+              // Isi input form
+              const inputSelector = '#input, input.form__input';
+              await page.waitForSelector(inputSelector, { timeout: 15000 });
+              await page.fill(inputSelector, igUrl);
+
+              // Tekan Enter / tombol Submit
+              console.log('⚡ Mengirim URL dan menunggu proses pemrosesan server...');
+              await page.press(inputSelector, 'Enter');
+
+              // Menunggu tombol Download MP4 muncul
+              const downloadBtnSelector = 'a.button__download, a[download="true"]';
+              await page.waitForSelector(downloadBtnSelector, { timeout: 45000 });
+
+              // Ambil link download MP4 asli dari atribut href
+              const downloadUrl = await page.getAttribute(downloadBtnSelector, 'href');
+              console.log('🔗 Link video berhasil didapatkan! Mengunduh file MP4...');
+
+              // Unduh video langsung menggunakan context API Playwright agar header tetap konsisten
+              const response = await context.request.get(downloadUrl);
+              const videoBuffer = await response.body();
+
+              fs.writeFileSync('video.mp4', videoBuffer);
+              console.log('✅ Video berhasil disimpan sebagai video.mp4');
+
+            } catch (error) {
+              console.error('❌ Gagal mengunduh video via SSSInstagram:', error.message);
+              process.exit(1);
+            } finally {
+              await browser.close();
+            }
+          })();
+          EOF
+          node download_ig.js "${{ github.event.inputs.video_url }}"
 
       - name: Run OpenCV Detection & EasyOCR
         run: |
@@ -231,6 +284,15 @@ jobs:
 
           mv output.mp4 video.mp4
 
+      - name: Upload Video & ChatGPT JSON Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-edited-video
+          path: |
+            video.mp4
+            hasil_ai.json
+
+      # --- START BUFFER AUTO POST VIA GITHUB RELEASES ---
 
       - name: Delete old release
         if: ${{ github.event.inputs.post_to_buffer == 'true' }}
@@ -285,8 +347,8 @@ jobs:
       - name: Upload via Buffer API
         if: ${{ github.event.inputs.post_to_buffer == 'true' }}
         env:
-          BUFFER_V2: ${{ secrets.BUFFER_API_KEY }}
-          BUFFER_CHANNEL_ID: "6a471f4e5ab6d2f1069b6f5e"
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_CHANNEL_ID: "6a2032d8c687a22dd457622f"
           POST_CAPTION: ${{ github.event.inputs.caption }}
           VIDEO_URL: ${{ env.VIDEO_URL }}
         run: |
@@ -300,12 +362,11 @@ jobs:
           import urllib.error
           from datetime import datetime, timezone, timedelta
 
-          api_key = os.environ["BUFFER_V2"]
+          api_key = os.environ["BUFFER_API_KEY"]
           channel_id = os.environ["BUFFER_CHANNEL_ID"]
           video_url = os.environ["VIDEO_URL"]
           caption = os.environ.get("POST_CAPTION", "")
 
-          # Jadwalkan 2 menit dari sekarang agar siap di proses oleh Buffer
           due_at = (
               datetime.now(timezone.utc) + timedelta(minutes=2)
           ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
