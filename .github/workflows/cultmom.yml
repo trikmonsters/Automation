@@ -282,7 +282,7 @@ jobs:
         run: |
           curl -L -o Arial.ttf "https://github.com/matthieua/WOW-Fonts/raw/master/Arial.ttf"
           
-          # Jika text_overlay.txt kosong, jalankan ffmpeg tanpa filter drawtext agar video bersih dari teks
+          # Jika text_overlay.txt kosong, jalankan ffmpeg tanpa filter drawtext agar video bersih
           if [ ! -s text_overlay.txt ]; then
             echo "ℹ️ Teks overlay kosong, memotong video tanpa menambahkan teks..."
             ffmpeg -i "video.mp4" \
@@ -291,12 +291,11 @@ jobs:
                                pad=1080:1920:(ow-iw)/2:(oh-ih)/2:white" \
               -c:a copy output.mp4
           else
-            echo "ℹ️ Menambahkan teks overlay ke video..."
             ffmpeg -i "video.mp4" \
               -filter_complex "[0:v]crop=${{ env.CROP_W }}:${{ env.CROP_H }}:${{ env.CROP_X }}:${{ env.CROP_Y }}, \
                                scale=1080:-1, \
                                pad=1080:1920:(ow-iw)/2:(oh-ih)/2:white, \
-                               drawtext=fontfile=Arial.ttf:textfile=text_overlay.txt:x=(w-text_w)/2:y=140:fontsize=45:fontcolor=black" \
+                               drawtext=fontfile=Arial.ttf:textfile=text_overlay.txt:x=(w-text_w)/2:y='(1920-ih)/4-(th/2)':fontsize=45:fontcolor=black" \
               -c:a copy output.mp4
           fi
 
@@ -355,7 +354,7 @@ jobs:
       - name: Upload via Buffer API
         if: ${{ github.event.inputs.post_to_buffer == 'true' }}
         env:
-          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_API_KEY: ${{ secrets.BUFFER_V2 }}
           BUFFER_CHANNEL_ID: "6a471f4e5ab6d2f1069b6f5e"
           VIDEO_URL: ${{ env.VIDEO_URL }}
         run: |
