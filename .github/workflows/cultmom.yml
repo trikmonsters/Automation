@@ -282,7 +282,6 @@ jobs:
         run: |
           curl -L -o Arial.ttf "https://github.com/matthieua/WOW-Fonts/raw/master/Arial.ttf"
           
-          # Jika text_overlay.txt kosong, jalankan ffmpeg tanpa filter drawtext agar video bersih
           if [ ! -s text_overlay.txt ]; then
             echo "ℹ️ Teks overlay kosong, memotong video tanpa menambahkan teks..."
             ffmpeg -i "video.mp4" \
@@ -291,16 +290,26 @@ jobs:
                                pad=1080:1920:(ow-iw)/2:(oh-ih)/2:white" \
               -c:a copy output.mp4
           else
+            SCALED_H=$(( ${{ env.CROP_H }} * 1080 / ${{ env.CROP_W }} ))
+            
+            TOP_PAD=$(( (1920 - SCALED_H) / 2 ))
+            if [ $TOP_PAD -lt 0 ]; then TOP_PAD=0; fi
+            
+            TOP_CENTER=$(( TOP_PAD / 2 ))
+            
+            if [ $TOP_CENTER -lt 80 ]; then TOP_CENTER=80; fi
+            
+            echo "📐 Analisis Frame: Tinggi Scaled=$SCALED_H px | Putih Atas=$TOP_PAD px | Target Pusat Y=$TOP_CENTER px"
+            
             ffmpeg -i "video.mp4" \
               -filter_complex "[0:v]crop=${{ env.CROP_W }}:${{ env.CROP_H }}:${{ env.CROP_X }}:${{ env.CROP_Y }}, \
                                scale=1080:-1, \
                                pad=1080:1920:(ow-iw)/2:(oh-ih)/2:white, \
-                               drawtext=fontfile=Arial.ttf:textfile=text_overlay.txt:x=(w-text_w)/2:y='(1920-ih)/4-(th/2)':fontsize=45:fontcolor=black" \
+                               drawtext=fontfile=Arial.ttf:textfile=text_overlay.txt:x=(w-text_w)/2:y=${TOP_CENTER}-(text_h/2):fontsize=45:fontcolor=black" \
               -c:a copy output.mp4
           fi
 
           mv output.mp4 video.mp4
-
       - name: Delete old release
         if: ${{ github.event.inputs.post_to_buffer == 'true' }}
         env:
