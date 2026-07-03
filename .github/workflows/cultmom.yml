@@ -6,11 +6,11 @@ on:
       video_url:
         description: 'Masukkan URL Video Media / Instagram'
         required: true
-        default: 'https://www.instagram.com/reel/DTJ6u-JE-Ta/'
+        default: ''
       caption:
-        description: 'Caption untuk postingan Buffer'
+        description: 'Caption opsional (jika kosong, pakai hasil OCR)'
         required: false
-        default: 'Check out this awesome video! 🔥 #viral #reels'
+        default: ''
       post_to_buffer:
         description: 'Langsung upload ke Buffer?'
         required: true
@@ -73,24 +73,19 @@ jobs:
               console.log('🌐 Membuka sssinstagram.com...');
               await page.goto('https://sssinstagram.com/reels-downloader', { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-              // Isi input form
               const inputSelector = '#input, input.form__input';
               await page.waitForSelector(inputSelector, { timeout: 15000 });
               await page.fill(inputSelector, igUrl);
 
-              // Tekan Enter / tombol Submit
               console.log('⚡ Mengirim URL dan menunggu proses pemrosesan server...');
               await page.press(inputSelector, 'Enter');
 
-              // Menunggu tombol Download MP4 muncul
               const downloadBtnSelector = 'a.button__download, a[download="true"]';
               await page.waitForSelector(downloadBtnSelector, { timeout: 45000 });
 
-              // Ambil link download MP4 asli dari atribut href
               const downloadUrl = await page.getAttribute(downloadBtnSelector, 'href');
               console.log('🔗 Link video berhasil didapatkan! Mengunduh file MP4...');
 
-              // Unduh video langsung menggunakan context API Playwright agar header tetap konsisten
               const response = await context.request.get(downloadUrl);
               const videoBuffer = await response.body();
 
@@ -159,9 +154,6 @@ jobs:
           except Exception:
               detected_text = ""
 
-          if not detected_text or len(detected_text) < 3:
-              detected_text = "Amazing video content highlights"
-              
           with open('detected_text.txt', 'w', encoding='utf-8') as f:
               f.write(detected_text)
           EOF
@@ -169,6 +161,8 @@ jobs:
           cat crop_params.txt >> $GITHUB_ENV
 
       - name: Run Playwright ChatGPT Script
+        env:
+          INPUT_CAPTION: ${{ github.event.inputs.caption }}
         run: |
           cat << 'EOF' > script.js
           const { chromium } = require('playwright-extra');
@@ -178,6 +172,7 @@ jobs:
           chromium.use(stealth);
 
           function wrapText(text, maxChars = 40) {
+            if (!text) return "";
             const words = text.split(' ');
             let lines = [];
             let currentLine = '';
@@ -197,13 +192,31 @@ jobs:
           }
 
           (async () => {
-            let detectedText = "Amazing video content highlights";
+            const inputCaption = process.env.INPUT_CAPTION ? process.env.INPUT_CAPTION.trim() : "";
+            let ocrText = "";
             if (fs.existsSync('detected_text.txt')) {
-                detectedText = fs.readFileSync('detected_text.txt', 'utf8').trim();
+              ocrText = fs.readFileSync('detected_text.txt', 'utf8').trim();
             }
 
-            const prompt = `Convert the following text into a short video hook that is controversial or funny: "${detectedText}"
-            Respond ONLY with a raw JSON array containing exactly 2 strings, example: ["Hook 1", "Hook 2"]. Do not include markdown blocks, do not include "json" formatting text, just the raw array.`;
+            let sourceText = "";
+            if (inputCaption.length > 0) {
+              sourceText = inputCaption;
+              console.log("ℹ️ Menggunakan input caption sebagai sumber AI.");
+            } else if (ocrText.length >= 3) {
+              sourceText = ocrText;
+              console.log("ℹ️ Menggunakan hasil OCR sebagai sumber AI.");
+            } else {
+              console.log("⚠️ Input caption kosong & OCR gagal/kosong. Menggunakan fallback hashtag.");
+              fs.writeFileSync('text_overlay.txt', '', 'utf8');
+              fs.writeFileSync('buffer_caption.txt', '#songs #countrymusic #music', 'utf8');
+              return;
+            }
+
+            const prompt = `Convert the following text into 2 engaging versions. 
+            First version: a short controversial or funny video hook overlay. 
+            Second version: an engaging social media post caption based on the text.
+            Text source: "${sourceText}"
+            Respond ONLY with a raw JSON array containing exactly 2 strings, example: ["Short Hook", "Post Caption"]. Do not include markdown blocks, do not include "json" formatting text, just the raw array.`;
 
             const browser = await chromium.launch({ headless: true });
             const context = await browser.newContext({
@@ -241,29 +254,23 @@ jobs:
 
                 try {
                     const parsedJson = JSON.parse(lastResponseText);
-                    fs.writeFileSync('hasil_ai.json', JSON.stringify(parsedJson, null, 2), 'utf8');
-                    
-                    let textOverlay = detectedText;
-                    if (Array.isArray(parsedJson)) {
-                        textOverlay = parsedJson[0] || detectedText;
-                    } else if (typeof parsedJson === 'object') {
-                        textOverlay = Object.values(parsedJson)[0] || detectedText;
-                    }
-                    
-                    fs.writeFileSync('text_overlay.txt', wrapText(textOverlay), 'utf8');
-                } catch (e) {
-                    const cleanText = lastResponseText.replace(/[\[\]"]/g, '').split('\n')[0] || detectedText;
-                    fs.writeFileSync('hasil_ai.json', JSON.stringify([cleanText, cleanText], null, 2));
-                    fs.writeFileSync('text_overlay.txt', wrapText(cleanText), 'utf8');
-                }
+                    const videoHook = parsedJson[0] || sourceText;
+                    const bufferCap = parsedJson[1] || sourceText;
 
+                    fs.writeFileSync('text_overlay.txt', wrapText(videoHook), 'utf8');
+                    fs.writeFileSync('buffer_caption.txt', bufferCap, 'utf8');
+                } catch (e) {
+                    const cleanText = lastResponseText.replace(/[\[\]"]/g, '').split('\n')[0] || sourceText;
+                    fs.writeFileSync('text_overlay.txt', wrapText(cleanText), 'utf8');
+                    fs.writeFileSync('buffer_caption.txt', cleanText, 'utf8');
+                }
               } else {
                 throw new Error("Response element not found");
               }
-
             } catch (error) {
-              fs.writeFileSync('hasil_ai.json', JSON.stringify([detectedText, detectedText], null, 2));
-              fs.writeFileSync('text_overlay.txt', wrapText(detectedText), 'utf8');
+              console.error("AI Error, falling back to original text:", error.message);
+              fs.writeFileSync('text_overlay.txt', wrapText(sourceText), 'utf8');
+              fs.writeFileSync('buffer_caption.txt', sourceText, 'utf8');
             } finally {
               await browser.close();
             }
@@ -274,25 +281,26 @@ jobs:
       - name: Process Video with FFmpeg
         run: |
           curl -L -o Arial.ttf "https://github.com/matthieua/WOW-Fonts/raw/master/Arial.ttf"
-
-          ffmpeg -i "video.mp4" \
-            -filter_complex "[0:v]crop=${{ env.CROP_W }}:${{ env.CROP_H }}:${{ env.CROP_X }}:${{ env.CROP_Y }}, \
-                             scale=1080:-1, \
-                             pad=1080:1920:(ow-iw)/2:(oh-ih)/2:white, \
-                             drawtext=fontfile=Arial.ttf:textfile=text_overlay.txt:x=(w-text_w)/2:y=140:fontsize=45:fontcolor=black" \
-            -c:a copy output.mp4
+          
+          # Jika text_overlay.txt kosong, jalankan ffmpeg tanpa filter drawtext agar video bersih dari teks
+          if [ ! -s text_overlay.txt ]; then
+            echo "ℹ️ Teks overlay kosong, memotong video tanpa menambahkan teks..."
+            ffmpeg -i "video.mp4" \
+              -filter_complex "[0:v]crop=${{ env.CROP_W }}:${{ env.CROP_H }}:${{ env.CROP_X }}:${{ env.CROP_Y }}, \
+                               scale=1080:-1, \
+                               pad=1080:1920:(ow-iw)/2:(oh-ih)/2:white" \
+              -c:a copy output.mp4
+          else
+            echo "ℹ️ Menambahkan teks overlay ke video..."
+            ffmpeg -i "video.mp4" \
+              -filter_complex "[0:v]crop=${{ env.CROP_W }}:${{ env.CROP_H }}:${{ env.CROP_X }}:${{ env.CROP_Y }}, \
+                               scale=1080:-1, \
+                               pad=1080:1920:(ow-iw)/2:(oh-ih)/2:white, \
+                               drawtext=fontfile=Arial.ttf:textfile=text_overlay.txt:x=(w-text_w)/2:y=140:fontsize=45:fontcolor=black" \
+              -c:a copy output.mp4
+          fi
 
           mv output.mp4 video.mp4
-
-      - name: Upload Video & ChatGPT JSON Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: final-edited-video
-          path: |
-            video.mp4
-            hasil_ai.json
-
-      # --- START BUFFER AUTO POST VIA GITHUB RELEASES ---
 
       - name: Delete old release
         if: ${{ github.event.inputs.post_to_buffer == 'true' }}
@@ -348,8 +356,7 @@ jobs:
         if: ${{ github.event.inputs.post_to_buffer == 'true' }}
         env:
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
-          BUFFER_CHANNEL_ID: "6a2032d8c687a22dd457622f"
-          POST_CAPTION: ${{ github.event.inputs.caption }}
+          BUFFER_CHANNEL_ID: "6a471f4e5ab6d2f1069b6f5e"
           VIDEO_URL: ${{ env.VIDEO_URL }}
         run: |
           set -e
@@ -365,7 +372,12 @@ jobs:
           api_key = os.environ["BUFFER_API_KEY"]
           channel_id = os.environ["BUFFER_CHANNEL_ID"]
           video_url = os.environ["VIDEO_URL"]
-          caption = os.environ.get("POST_CAPTION", "")
+
+          # Baca caption yang sudah ditentukan di tahap sebelumnya
+          caption = ""
+          if os.path.exists("buffer_caption.txt"):
+              with open("buffer_caption.txt", "r", encoding="utf-8") as f:
+                  caption = f.read().strip()
 
           due_at = (
               datetime.now(timezone.utc) + timedelta(minutes=2)
@@ -373,6 +385,7 @@ jobs:
 
           print(f"📅 Scheduled time : {due_at}")
           print(f"🎬 Video URL      : {video_url}")
+          print(f"📝 Caption        : {caption}")
 
           mutation = (
               "mutation { createPost(input: {"
