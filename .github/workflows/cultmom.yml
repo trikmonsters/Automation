@@ -363,7 +363,7 @@ jobs:
       - name: Upload via Buffer API
         if: ${{ github.event.inputs.post_to_buffer == 'true' }}
         env:
-          BUFFER_API_KEY: ${{ secrets.BUFFER_V2 }}
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
           BUFFER_CHANNEL_ID: "6a471f4e5ab6d2f1069b6f5e"
           VIDEO_URL: ${{ env.VIDEO_URL }}
         run: |
@@ -395,6 +395,7 @@ jobs:
           print(f"🎬 Video URL      : {video_url}")
           print(f"📝 Caption        : {caption}")
 
+          # Menggunakan field 'metadata' sesuai spesifikasi GraphQL Buffer untuk Instagram Reels
           mutation = (
               "mutation { createPost(input: {"
               "  text: " + json.dumps(caption) + ","
@@ -402,7 +403,8 @@ jobs:
               "  schedulingType: automatic,"
               "  mode: customScheduled,"
               "  dueAt: " + json.dumps(due_at) + ","
-              "  assets: [{ video: { url: " + json.dumps(video_url) + " } }]"
+              "  assets: [{ video: { url: " + json.dumps(video_url) + " } }],"
+              "  metadata: { instagram: { type: reel, shouldShareToFeed: true } }"
               "}) {"
               "  ... on PostActionSuccess { post { id dueAt } }"
               "  ... on MutationError { message }"
