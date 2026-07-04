@@ -237,7 +237,7 @@ jobs:
               await page.waitForTimeout(15000);
 
               const responseSelector = 'article [data-message-author-role="assistant"], main div.markdown, .agent-turn';
-              await page.waitForSelector(responseSelector, { timeout: 25000 });
+              await page.waitForSelector(responseSelector, { timeout: 45000 });
               
               const responses = await page.locator(responseSelector).all();
               if (responses.length > 0) {
