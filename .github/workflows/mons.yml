@@ -203,9 +203,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           sleep 5
-          VIDEO_URL=$(gh api repos/${{ github.repository }}/releases/tags/mons \
-            --jq '.assets[0].browser_download_url')
-          echo "VIDEO_URL=${VIDEO_URL}" >> $GITHUB_ENV
+          # Menggunakan format URL raw/palsu yang memaksa GitHub langsung menyajikan stream data tanpa halaman perantara
+          RAW_URL="https://github.com/${{ github.repository }}/releases/download/genz/${{ env.OUTPUT_FILE }}"
+          echo "VIDEO_URL=${RAW_URL}" >> $GITHUB_ENV
 
       - name: Upload TikTok via Buffer API
         if: ${{ github.event.inputs.upload_tiktok == 'true' }}
