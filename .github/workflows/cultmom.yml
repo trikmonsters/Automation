@@ -384,7 +384,6 @@ jobs:
         if: ${{ github.event.inputs.post_to_buffer == 'true' }}
         env:
           BUFFER_API_KEY: ${{ secrets.BUFFER_V2 }}
-          BUFFER_CHANNEL_ID: "6a471f4e5ab6d2f1069b6f5e"
           VIDEO_URL: ${{ env.VIDEO_URL }}
         run: |
           set -e
@@ -398,10 +397,13 @@ jobs:
           from datetime import datetime, timezone, timedelta
 
           api_key = os.environ["BUFFER_API_KEY"]
-          channel_id = os.environ["BUFFER_CHANNEL_ID"]
           video_url = os.environ["VIDEO_URL"]
 
-          # Baca caption yang sudah ditentukan di tahap sebelumnya
+          channels = [
+              {"id": "6a471f4e5ab6d2f1069b6f5e", "platform": "instagram"},
+              {"id": "6a48fcaf5ab6d2f106a37232", "platform": "tiktok"}
+          ]
+
           caption = ""
           if os.path.exists("buffer_caption.txt"):
               with open("buffer_caption.txt", "r", encoding="utf-8") as f:
@@ -415,40 +417,49 @@ jobs:
           print(f"🎬 Video URL      : {video_url}")
           print(f"📝 Caption        : {caption}")
 
-          # Menggunakan field 'metadata' sesuai spesifikasi GraphQL Buffer untuk Instagram Reels
-          mutation = (
-              "mutation { createPost(input: {"
-              "  text: " + json.dumps(caption) + ","
-              "  channelId: " + json.dumps(channel_id) + ","
-              "  schedulingType: automatic,"
-              "  mode: customScheduled,"
-              "  dueAt: " + json.dumps(due_at) + ","
-              "  assets: [{ video: { url: " + json.dumps(video_url) + " } }],"
-              "  metadata: { instagram: { type: reel, shouldShareToFeed: true } }"
-              "}) {"
-              "  ... on PostActionSuccess { post { id dueAt } }"
-              "  ... on MutationError { message }"
-              "} }"
-          )
+          for ch in channels:
+              channel_id = ch["id"]
+              platform = ch["platform"]
+              print(f"🚀 Processing channel: {channel_id} ({platform})")
+              
+              # Tentukan string metadata berdasarkan jenis platform
+              if platform == "instagram":
+                  metadata_str = ", metadata: { instagram: { type: reel, shouldShareToFeed: true } }"
+              else:
+                  metadata_str = ""
 
-          payload = json.dumps({"query": mutation}).encode("utf-8")
+              mutation = (
+                  "mutation { createPost(input: {"
+                  "  text: " + json.dumps(caption) + ","
+                  "  channelId: " + json.dumps(channel_id) + ","
+                  "  schedulingType: automatic,"
+                  "  mode: customScheduled,"
+                  "  dueAt: " + json.dumps(due_at) + ","
+                  "  assets: [{ video: { url: " + json.dumps(video_url) + " } }]"
+                  + metadata_str +
+                  "}) {"
+                  "  ... on PostActionSuccess { post { id dueAt } }"
+                  "  ... on MutationError { message }"
+                  "} }"
+              )
 
-          req = urllib.request.Request(
-              "https://api.buffer.com/graphql",
-              data=payload,
-              headers={
-                  "Content-Type": "application/json",
-                  "Authorization": "Bearer " + api_key,
-              }
-          )
+              payload = json.dumps({"query": mutation}).encode("utf-8")
 
-          try:
-              with urllib.request.urlopen(req) as res:
-                  body = json.loads(res.read().decode("utf-8"))
-          except urllib.error.HTTPError as e:
-              print(f"HTTP Error {e.code}: {e.read().decode()}")
-              sys.exit(1)
+              req = urllib.request.Request(
+                  "https://api.buffer.com/graphql",
+                  data=payload,
+                  headers={
+                      "Content-Type": "application/json",
+                      "Authorization": "Bearer " + api_key,
+                  }
+              )
 
-          print("✅ Buffer API Response:")
-          print(json.dumps(body, indent=2))
+              try:
+                  with urllib.request.urlopen(req) as res:
+                      body = json.loads(res.read().decode("utf-8"))
+                  print(f"✅ Buffer API Response for {channel_id}:")
+                  print(json.dumps(body, indent=2))
+              except urllib.error.HTTPError as e:
+                  print(f"❌ HTTP Error {e.code} for channel {channel_id}: {e.read().decode()}")
+                  continue
           PYEOF
