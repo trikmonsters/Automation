@@ -8,7 +8,7 @@ on:
         required: true
         default: ''
       caption:
-        description: 'Caption opsional (jika kosong, pakai hasil OCR)'
+        description: 'Caption opsional (jika kosong, pakai hasil Gemini)'
         required: false
         default: ''
       post_to_buffer:
@@ -37,11 +37,11 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install Python Dependencies
+      - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg libgomp1
-          pip install opencv-python-headless numpy torch torchvision easyocr
+          sudo apt-get install -y ffmpeg
+          pip install opencv-python-headless requests google-generativeai --quiet
 
       - name: Install Playwright Dependencies
         run: |
@@ -59,7 +59,7 @@ jobs:
           chromium.use(stealth);
 
           (async () => {
-            const igUrl = process.argv[2] || "https://www.instagram.com/reel/DTJ6u-JE-Ta/";
+            const igUrl = process.argv[2] || "https://instagram.com";
             console.log(`🚀 Memulai proses unduh untuk URL: ${igUrl}`);
 
             const browser = await chromium.launch({ headless: true });
@@ -71,29 +71,29 @@ jobs:
 
             try {
               console.log('🌐 Membuka sssinstagram.com...');
-              await page.goto('https://sssinstagram.com/reels-downloader', { waitUntil: 'domcontentloaded', timeout: 30000 });
+              await page.goto('https://sssinstagram.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
 
               const inputSelector = '#input, input.form__input';
               await page.waitForSelector(inputSelector, { timeout: 15000 });
               await page.fill(inputSelector, igUrl);
 
-              console.log('⚡ Mengirim URL dan menunggu proses pemrosesan server...');
+              console.log('⚡ Mengirim URL...');
               await page.press(inputSelector, 'Enter');
 
               const downloadBtnSelector = 'a.button__download, a[download="true"]';
               await page.waitForSelector(downloadBtnSelector, { timeout: 45000 });
 
               const downloadUrl = await page.getAttribute(downloadBtnSelector, 'href');
-              console.log('🔗 Link video berhasil didapatkan! Mengunduh file MP4...');
+              console.log('🔗 Link video didapatkan! Mengunduh...');
 
               const response = await context.request.get(downloadUrl);
               const videoBuffer = await response.body();
 
               fs.writeFileSync('video.mp4', videoBuffer);
-              console.log('✅ Video berhasil disimpan sebagai video.mp4');
+              console.log('✅ Video disimpan sebagai video.mp4');
 
             } catch (error) {
-              console.error('❌ Gagal mengunduh video via SSSInstagram:', error.message);
+              console.error('❌ Gagal mengunduh video:', error.message);
               process.exit(1);
             } finally {
               await browser.close();
@@ -102,274 +102,292 @@ jobs:
           EOF
           node download_ig.js "${{ github.event.inputs.video_url }}"
 
-      - name: Run OpenCV Detection & EasyOCR
-        run: |
-          cat << 'EOF' > process.py
-          import cv2
-          import numpy as np
-          import easyocr
-
-          video_path = "video.mp4"
-          cap = cv2.VideoCapture(video_path)
-          fps = cap.get(cv2.CAP_PROP_FPS)
-          cap.set(cv2.CAP_PROP_POS_FRAMES, int(fps * 2))
-          ret, frame = cap.read()
-          cap.release()
-
-          if not ret:
-              exit(1)
-
-          gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-          _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
-          contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-          full_h, full_w = frame.shape[0], frame.shape[1]
-
-          if contours:
-              largest_contour = max(contours, key=cv2.contourArea)
-              x, y, w, h = cv2.boundingRect(largest_contour)
-              
-              with open('crop_params.txt', 'w') as f:
-                  f.write(f"CROP_W={w}\n")
-                  f.write(f"CROP_H={h}\n")
-                  f.write(f"CROP_X={x}\n")
-                  f.write(f"CROP_Y={y}\n")
-              
-              if y > 10:
-                  text_area = frame[0:y, 0:full_w]
-              else:
-                  text_area = frame[0:int(full_h*0.2), 0:full_w]
-          else:
-              with open('crop_params.txt', 'w') as f:
-                  f.write(f"CROP_W={full_w}\n")
-                  f.write(f"CROP_H={full_h}\n")
-                  f.write(f"CROP_X=0\n")
-                  f.write(f"CROP_Y=0\n")
-              text_area = frame[0:int(full_h*0.2), 0:full_w]
-
-          try:
-              reader = easyocr.Reader(['en'])
-              ocr_results = reader.readtext(text_area, detail=0)
-              detected_text = " ".join(ocr_results).replace("\n", " ").strip()
-          except Exception:
-              detected_text = ""
-
-          with open('detected_text.txt', 'w', encoding='utf-8') as f:
-              f.write(detected_text)
-          EOF
-          python process.py
-          cat crop_params.txt >> $GITHUB_ENV
-
-      - name: Run Playwright ChatGPT Script
+      - name: Extract Sample, Analyze Video & Generate Metadata via Gemini API
         env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           INPUT_CAPTION: ${{ github.event.inputs.caption }}
         run: |
-          cat << 'EOF' > script.js
-          const { chromium } = require('playwright-extra');
-          const stealth = require('puppeteer-extra-plugin-stealth')();
-          const fs = require('fs');
+          cat << 'EOF' > detect_and_caption.py
+          import cv2
+          import json
+          import os
+          import sys
+          import time
+          import subprocess
+          import google.generativeai as genai
 
-          chromium.use(stealth);
+          # ── Setup API ────────────────────────────────────────────────
+          api_key = os.environ.get("GEMINI_API_KEY", "")
+          if not api_key:
+              print("❌ GEMINI_API_KEY kosong! Cek secret di repo settings.")
+              sys.exit(1)
+          genai.configure(api_key=api_key)
 
-          function wrapText(text, maxChars = 40) {
-            if (!text) return "";
-            const words = text.split(' ');
-            let lines = [];
-            let currentLine = '';
+          input_caption = os.environ.get("INPUT_CAPTION", "").strip()
+          video_path    = "video.mp4"
+          sample_path   = "sample_15s_end.mp4"
 
-            for (let word of words) {
-              if ((currentLine + word).length > maxChars) {
-                lines.push(currentLine.trim());
-                currentLine = word + ' ';
-              } else {
-                currentLine += word + ' ';
-              }
-            }
-            if (currentLine.trim()) {
-              lines.push(currentLine.trim());
-            }
-            return lines.join('\n');
+          # ── Baca metadata video ASLI ─────────────────────────────────
+          cap = cv2.VideoCapture(video_path)
+          full_h       = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+          full_w       = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+          fps          = cap.get(cv2.CAP_PROP_FPS) or 30
+          frame_count  = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+          total_dur    = frame_count / fps
+          cap.release()
+          print(f"📐 Resolusi Video Asli : {full_w}x{full_h}")
+          print(f"⏱️  Durasi Video Asli  : {total_dur:.2f} detik")
+
+          # ── Potong sample 15 detik AKHIR untuk dikirim ke Gemini ─────
+          # (hanya untuk analisis AI — bukan untuk di-crop akhir)
+          if total_dur <= 15.0:
+              start_time   = 0
+              sample_dur   = total_dur
+              print(f"ℹ️  Video pendek ({total_dur:.2f}s) — sample dari detik 0")
+          else:
+              start_time   = total_dur - 15
+              sample_dur   = 15
+              print(f"🎬 Memotong sample dari detik {start_time:.2f} s/d {total_dur:.2f}")
+
+          cmd_sample = (
+              f'ffmpeg -ss {start_time} -i "{video_path}" -t {sample_dur} '
+              f'-c:v libx264 -c:a aac -strict -2 "{sample_path}" -y -loglevel quiet'
+          )
+          subprocess.run(cmd_sample, shell=True, check=True)
+          print("✅ Sample video siap dikirim ke Gemini.")
+
+          # ── Upload sample ke Gemini & tunggu proses ──────────────────
+          print("🚀 Mengunggah sample ke Google Gemini API...")
+          video_file = genai.upload_file(path=sample_path)
+          print("⏳ Menunggu Gemini memproses video...")
+          while video_file.state.name == "PROCESSING":
+              time.sleep(2)
+              video_file = genai.get_file(video_file.name)
+          if video_file.state.name == "FAILED":
+              print("❌ Gemini gagal memproses video.")
+              sys.exit(1)
+          print("🤖 AI siap menganalisis!")
+
+          # ── Prompt ke Gemini ─────────────────────────────────────────
+          prompt = """
+          Tonton cuplikan video media sosial ini dengan seksama.
+          Pahami jalan ceritanya, ekspresi, teks, dan visualnya.
+
+          Anda WAJIB mengembalikan respons dalam Bahasa Inggris dengan format JSON MURNI seperti di bawah,
+          tanpa teks, kalimat, atau markdown apapun di luar JSON:
+          {
+            "y_min_persen": [Angka persentase 0-100 posisi horizontal atas di mana teks meme luar berakhir dan bingkai video film asli dimulai],
+            "y_max_persen": [Angka persentase 0-100 posisi horizontal bawah di mana bingkai video berakhir sebelum tombol navigasi HP],
+            "caption_sosmed": "[Buat caption promosi media sosial yang menarik, bikin penasaran, dan relevan dengan isi/ending video ini]",
+            "text_overlay_saran": "[Buat 1 kalimat teks pendek/hook-meme dramatis maksimal 8 kata yang sangat cocok ditempel di tengah video]"
           }
+          """
 
-          (async () => {
-            const inputCaption = process.env.INPUT_CAPTION ? process.env.INPUT_CAPTION.trim() : "";
-            let ocrText = "";
-            if (fs.existsSync('detected_text.txt')) {
-              ocrText = fs.readFileSync('detected_text.txt', 'utf8').trim();
-            }
+          model    = genai.GenerativeModel("gemini-3.5-flash")
+          response = model.generate_content([video_file, prompt])
+          raw_text = response.text.replace("```json", "").replace("```", "").strip()
+          print(f"\n📨 Raw JSON dari Gemini:\n{raw_text}\n")
 
-            let sourceText = "";
-            if (inputCaption.length > 0) {
-              sourceText = inputCaption;
-              console.log("ℹ️ Menggunakan input caption sebagai sumber AI.");
-            } else if (ocrText.length >= 3) {
-              sourceText = ocrText;
-              console.log("ℹ️ Menggunakan hasil OCR sebagai sumber AI.");
-            } else {
-              console.log("⚠️ Input caption kosong & OCR gagal/kosong. Menggunakan fallback hashtag.");
-              fs.writeFileSync('text_overlay.txt', '', 'utf8');
-              fs.writeFileSync('buffer_caption.txt', '#songs #countrymusic #music', 'utf8');
-              return;
-            }
+          # ── Parse JSON & hitung koordinat PIKSEL dari video ASLI ─────
+          # FIX UTAMA: koordinat dihitung dari full_h/full_w video asli,
+          # BUKAN dari dimensi sample. Tidak ada offset hardcoded.
+          try:
+              data        = json.loads(raw_text)
+              y_min_pct   = float(data['y_min_persen'])
+              y_max_pct   = float(data['y_max_persen'])
 
-            const prompt = `Convert the following text into 2 engaging versions. 
-            First version: a short controversial or funny video hook overlay. 
-            Second version: an engaging social media post caption based on the text.
-            Text source: "${sourceText}"
-            Respond ONLY with a raw JSON array containing exactly 2 strings, example: ["Short Hook", "Post Caption"]. Do not include markdown blocks, do not include "json" formatting text, just the raw array.`;
+              crop_y      = int(y_min_pct * full_h / 100)
+              y_max_px    = int(y_max_pct * full_h / 100)
+              crop_h      = y_max_px - crop_y
+              crop_x      = 0
+              crop_w      = full_w
 
-            const browser = await chromium.launch({ 
-              headless: true,
-              args: ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-setuid-sandbox']
-            });
-            const context = await browser.newContext({
-              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-              viewport: { width: 1280, height: 720 },
-              locale: 'en-US'
-            });
-            const page = await context.newPage();
+              # Validasi dasar
+              if crop_h <= 0:
+                  raise ValueError(f"crop_h tidak valid: {crop_h}")
 
-            try {
-              console.log("🌐 Membuka ChatGPT...");
-              await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+              text_overlay   = data.get('text_overlay_saran', '').strip()
+              buffer_caption = input_caption if input_caption else data.get('caption_sosmed', '#reels #viral #fyp')
 
-              const inputSelector = 'div#prompt-textarea, textarea[placeholder*="Message ChatGPT"], [contenteditable="true"]';
-              await page.waitForSelector(inputSelector, { timeout: 30000 });
-              
-              console.log("⌨️ Memasukkan prompt ke ChatGPT...");
-              await page.fill(inputSelector, prompt);
-              await page.waitForTimeout(1000);
-              
-              const sendButtonSelector = 'button[data-testid="send-button"], button[aria-label="Send message"]';
-              if (await page.locator(sendButtonSelector).count() > 0) {
-                await page.click(sendButtonSelector);
-              } else {
-                await page.press(inputSelector, 'Enter');
-              }
-              
-              console.log("⏳ Menunggu AI memproses jawaban secara natural...");
-              const stopStreamingSelector = 'button[aria-label="Stop generating"], button[data-testid="stop-button"]';
-              
-              try { await page.waitForSelector(stopStreamingSelector, { timeout: 5000 }); } catch(e) {}
-              await page.waitForSelector(stopStreamingSelector, { state: 'detached', timeout: 60000 });
-              
-              const responseSelector = 'article [data-message-author-role="assistant"], div.markdown, .agent-turn';
-              await page.waitForSelector(responseSelector, { timeout: 15000 });
-              
-              const responses = await page.locator(responseSelector).all();
-              if (responses.length > 0) {
-                let lastResponseText = await responses[responses.length - 1].innerText();
-                console.log("✅ Respons didapatkan!");
-                
-                if (lastResponseText.includes('```')) {
-                    const parts = lastResponseText.split('```');
-                    lastResponseText = parts[1];
-                    if (lastResponseText.startsWith('json')) {
-                        lastResponseText = lastResponseText.substring(4);
-                    }
-                }
-                lastResponseText = lastResponseText.trim();
+              print(f"✅ Geometri Crop (dari video asli {full_w}x{full_h}):")
+              print(f"   Y atas   : {y_min_pct}% → {crop_y}px")
+              print(f"   Y bawah  : {y_max_pct}% → {y_max_px}px")
+              print(f"   Crop H   : {crop_h}px | Crop W : {crop_w}px")
+              print(f"   Hook     : {text_overlay}")
 
-                try {
-                    const parsedJson = JSON.parse(lastResponseText);
-                    const videoHook = parsedJson[0] || sourceText;
-                    const bufferCap = parsedJson[1] || sourceText;
+          except Exception as e:
+              print(f"⚠️  Gagal parse JSON AI ({e}) — pakai fallback default")
+              crop_x, crop_y  = 0, int(full_h * 0.34)
+              crop_w          = full_w
+              crop_h          = int(full_h * 0.32)
+              text_overlay    = "Check this out! 😱🔥"
+              buffer_caption  = input_caption if input_caption else "#reels #viral #fyp"
 
-                    fs.writeFileSync('text_overlay.txt', wrapText(videoHook), 'utf8');
-                    fs.writeFileSync('buffer_caption.txt', bufferCap, 'utf8');
-                } catch (e) {
-                    const cleanText = lastResponseText.replace(/[\[\]"]/g, '').split('\n')[0] || sourceText;
-                    fs.writeFileSync('text_overlay.txt', wrapText(cleanText), 'utf8');
-                    fs.writeFileSync('buffer_caption.txt', cleanText, 'utf8');
-                }
-              } else {
-                throw new Error("Response element not found");
-              }
-            } catch (error) {
-              console.error("❌ Terjadi kesalahan pada Skrip Playwright:", error.message);
-              fs.writeFileSync('text_overlay.txt', wrapText(sourceText), 'utf8');
-              fs.writeFileSync('buffer_caption.txt', sourceText, 'utf8');
-            } finally {
-              await browser.close();
-            }
-          })();
+          # ── Simpan semua parameter ke file teks ──────────────────────
+          with open("crop_params.txt", "w") as f:
+              f.write(f"CROP_W={crop_w}\n")
+              f.write(f"CROP_H={crop_h}\n")
+              f.write(f"CROP_X={crop_x}\n")
+              f.write(f"CROP_Y={crop_y}\n")
+
+          with open("video_meta.txt", "w") as f:
+              f.write(f"TOTAL_DURATION={total_dur}\n")
+              f.write(f"START_TIME={start_time}\n")
+              f.write(f"FULL_H={full_h}\n")
+              f.write(f"FULL_W={full_w}\n")
+
+          # Word-wrap teks overlay (maks 35 karakter per baris)
+          def wrap_text(text, max_chars=35):
+              words, lines, cur = text.split(), [], ""
+              for w in words:
+                  if len(cur) + len(w) > max_chars:
+                      if cur: lines.append(cur.strip())
+                      cur = w + " "
+                  else:
+                      cur += w + " "
+              if cur.strip(): lines.append(cur.strip())
+              return "\n".join(lines)
+
+          with open("text_overlay.txt", "w", encoding="utf-8") as f:
+              f.write(wrap_text(text_overlay))
+
+          with open("buffer_caption.txt", "w", encoding="utf-8") as f:
+              f.write(buffer_caption)
+
+          try:
+              genai.delete_file(video_file.name)
+              print("🗑️  File Gemini dihapus.")
+          except Exception:
+              pass
+
+          print("\n✅ Semua parameter berhasil disimpan.")
           EOF
-          node script.js
+          python detect_and_caption.py
 
-      - name: Process Video with FFmpeg
+      - name: Process Video with FFmpeg (Crop dari Video Asli)
         run: |
-          curl -L -o Arial.ttf "https://github.com/matthieua/WOW-Fonts/raw/master/Arial.ttf"
-          
-          if [ ! -s text_overlay.txt ]; then
-            echo "ℹ️ Teks overlay kosong, memotong video tanpa menambahkan teks..."
-            ffmpeg -i "video.mp4" \
-              -filter_complex "[0:v]crop=${{ env.CROP_W }}:${{ env.CROP_H }}:${{ env.CROP_X }}:${{ env.CROP_Y }}, \
-                               scale=1080:-1, \
-                               pad=1080:1920:(ow-iw)/2:(oh-ih)/2:white" \
-              -c:a copy output.mp4
-          else
-            SCALED_H=$(( ${{ env.CROP_H }} * 1080 / ${{ env.CROP_W }} ))
-            
-            TOP_PAD=$(( (1920 - SCALED_H) / 2 ))
-            if [ $TOP_PAD -lt 0 ]; then TOP_PAD=0; fi
-            
-            TOP_CENTER=$(( TOP_PAD / 2 ))
-            
-            if [ $TOP_CENTER -lt 80 ]; then TOP_CENTER=80; fi
-            
-            echo "📐 Analisis Frame: Tinggi Scaled=$SCALED_H px | Putih Atas=$TOP_PAD px | Target Pusat Y=$TOP_CENTER px"
-            
-            ffmpeg -i "video.mp4" \
-              -filter_complex "[0:v]crop=${{ env.CROP_W }}:${{ env.CROP_H }}:${{ env.CROP_X }}:${{ env.CROP_Y }}, \
-                               scale=1080:-1, \
-                               unsharp=5:5:1.0:5:5:0.0, \
-                               pad=1080:1920:(ow-iw)/2:(oh-ih)/2:white, \
-                               drawtext=fontfile=Arial.ttf:textfile=text_overlay.txt:x=(w-text_w)/2:y=${TOP_CENTER}-(text_h/2):fontsize=45:fontcolor=black" \
-              -c:a copy output.mp4
+          source crop_params.txt
+          source video_meta.txt
+
+          echo "📐 Paramater Crop:"
+          echo "   Video asli   : ${FULL_W}x${FULL_H}px"
+          echo "   Crop region  : X=${CROP_X}, Y=${CROP_Y}, W=${CROP_W}, H=${CROP_H}"
+
+          # Validasi: pastikan crop tidak melampaui batas video
+          if [ "$CROP_Y" -lt 0 ]; then CROP_Y=0; fi
+          if [ "$CROP_X" -lt 0 ]; then CROP_X=0; fi
+          MAX_H=$(( FULL_H - CROP_Y ))
+          MAX_W=$(( FULL_W - CROP_X ))
+          if [ "$CROP_H" -gt "$MAX_H" ]; then CROP_H=$MAX_H; fi
+          if [ "$CROP_W" -gt "$MAX_W" ]; then CROP_W=$MAX_W; fi
+
+          echo "✅ Crop tervalidasi: W=${CROP_W}, H=${CROP_H}, X=${CROP_X}, Y=${CROP_Y}"
+
+          # ── Ambil font Arial dari sistem ──────────────────────────
+          FONT_PATH="/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+          if [ ! -f "$FONT_PATH" ]; then
+            sudo apt-get install -y fonts-liberation -qq
           fi
 
-          mv output.mp4 video.mp4
-          
+          TEXT_EMPTY=true
+          if [ -s text_overlay.txt ]; then
+            CONTENT=$(cat text_overlay.txt | tr -d '[:space:]')
+            if [ -n "$CONTENT" ]; then TEXT_EMPTY=false; fi
+          fi
+
+          if [ "$TEXT_EMPTY" = true ]; then
+            echo "ℹ️  Tidak ada teks overlay — crop & scale standar dari video asli..."
+
+            # KUNCI FIX: -i video.mp4 (bukan sample_15s_end.mp4)
+            ffmpeg -i "video.mp4" \
+              -vf "crop=${CROP_W}:${CROP_H}:${CROP_X}:${CROP_Y},\
+                   hflip,\
+                   scale=1080:1920:force_original_aspect_ratio=decrease,\
+                   pad=1080:1920:(ow-iw)/2:(oh-ih)/2:white" \
+              -c:v libx264 -crf 20 -c:a aac -b:a 128k \
+              "output_final.mp4" -y -loglevel quiet
+
+          else
+            echo "🎨 Menambahkan teks overlay ke video asli..."
+
+            # Hitung posisi Y teks (di area padding atas setelah scale ke 1920)
+            SCALED_H=$(( CROP_H * 1080 / CROP_W ))
+            TOP_PAD=$(( (1920 - SCALED_H) / 2 ))
+            if [ "$TOP_PAD" -lt 0 ]; then TOP_PAD=0; fi
+            TEXT_Y=$(( TOP_PAD / 2 ))
+            if [ "$TEXT_Y" -lt 60 ]; then TEXT_Y=60; fi
+
+            echo "   Scaled H : ${SCALED_H}px | Top Pad : ${TOP_PAD}px | Text Y : ${TEXT_Y}px"
+
+            # KUNCI FIX: -i video.mp4 (bukan sample_15s_end.mp4)
+            ffmpeg -i "video.mp4" \
+              -vf "crop=${CROP_W}:${CROP_H}:${CROP_X}:${CROP_Y},\
+                   hflip,\
+                   scale=1080:1920:force_original_aspect_ratio=decrease,\
+                   unsharp=5:5:1.0:5:5:0.0,\
+                   pad=1080:1920:(ow-iw)/2:(oh-ih)/2:white,\
+                   drawtext=fontfile=${FONT_PATH}:\
+                   textfile=text_overlay.txt:\
+                   x=(w-text_w)/2:y=${TEXT_Y}:\
+                   fontsize=48:fontcolor=black:\
+                   borderw=2:bordercolor=white" \
+              -c:v libx264 -crf 20 -c:a aac -b:a 128k \
+              "output_final.mp4" -y -loglevel quiet
+          fi
+
+          # Ganti video.mp4 dengan hasil akhir untuk langkah upload
+          mv output_final.mp4 video.mp4
+          echo "✅ Video selesai diproses dan siap di-upload!"
+
+          # Debug: tampilkan info video hasil
+          ffprobe -v quiet -print_format json -show_streams video.mp4 \
+            | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          for s in d['streams']:
+            if s['codec_type'] == 'video':
+              print(f\"📹 Output: {s['width']}x{s['height']} | codec: {s['codec_name']}\")
+          "
+
       - name: Delete old release
         if: ${{ github.event.inputs.post_to_buffer == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
           echo "🗑️ Checking for old releases..."
           RELEASE_ID=$(gh api repos/${{ github.repository }}/releases \
             --jq '.[] | select(.tag_name == "buffer_video") | .id' 2>/dev/null || echo "")
           if [ -n "$RELEASE_ID" ]; then
             echo "Deleting release ID: $RELEASE_ID"
-            gh api -X DELETE repos/${{ github.repository }}/releases/$RELEASE_ID
-            sleep 2
-            gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/buffer_video || true
-            sleep 2
-            echo "✅ Old release deleted"
-          else
-            echo "ℹ️ No old release found"
+            gh api -X DELETE repos/${{ github.repository }}/releases/$RELEASE_ID || true
+            sleep 3
           fi
+          gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/buffer_video || true
+          sleep 3
+          echo "✅ Cleanup done"
 
       - name: Upload video to GitHub Release
         if: ${{ github.event.inputs.post_to_buffer == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
           echo "📦 Creating GitHub release..."
-          gh release create buffer_video \
-            --repo "${{ github.repository }}" \
-            --title "Buffer Video (Temporary Hosting)" \
-            --notes "Temporary hosting for Buffer API. Automatically replaced on next run." \
-            video.mp4
-          echo "✅ Release created successfully"
+          for i in 1 2 3; do
+            gh release create buffer_video \
+              --repo "${{ github.repository }}" \
+              --title "Buffer Video (Temporary Hosting)" \
+              --notes "Temporary hosting for Buffer API. Automatically replaced on next run." \
+              video.mp4 && break
+            echo "⚠️ Attempt $i gagal, retry dalam 5 detik..."
+            sleep 5
+          done
+          echo "✅ Release created"
 
       - name: Get video URL from release
         if: ${{ github.event.inputs.post_to_buffer == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
           sleep 5
           VIDEO_URL=$(gh api repos/${{ github.repository }}/releases/tags/buffer_video \
             --jq '.assets[0].browser_download_url')
@@ -386,17 +404,14 @@ jobs:
           BUFFER_API_KEY: ${{ secrets.BUFFER_V2 }}
           VIDEO_URL: ${{ env.VIDEO_URL }}
         run: |
-          set -e
-          echo "📤 Sending to Buffer API..."
           python3 - <<'PYEOF'
           import os
           import json
-          import sys
           import urllib.request
           import urllib.error
           from datetime import datetime, timezone, timedelta
 
-          api_key = os.environ["BUFFER_API_KEY"]
+          api_key   = os.environ["BUFFER_API_KEY"]
           video_url = os.environ["VIDEO_URL"]
 
           channels = [
@@ -419,10 +434,9 @@ jobs:
 
           for ch in channels:
               channel_id = ch["id"]
-              platform = ch["platform"]
-              print(f"🚀 Processing channel: {channel_id} ({platform})")
-              
-              # Tentukan string metadata berdasarkan jenis platform
+              platform   = ch["platform"]
+              print(f"\n🚀 Posting ke: {channel_id} ({platform})")
+
               if platform == "instagram":
                   metadata_str = ", metadata: { instagram: { type: reel, shouldShareToFeed: true } }"
               else:
@@ -430,11 +444,11 @@ jobs:
 
               mutation = (
                   "mutation { createPost(input: {"
-                  "  text: " + json.dumps(caption) + ","
-                  "  channelId: " + json.dumps(channel_id) + ","
+                  "  text: "        + json.dumps(caption)    + ","
+                  "  channelId: "   + json.dumps(channel_id) + ","
                   "  schedulingType: automatic,"
                   "  mode: customScheduled,"
-                  "  dueAt: " + json.dumps(due_at) + ","
+                  "  dueAt: "       + json.dumps(due_at)     + ","
                   "  assets: [{ video: { url: " + json.dumps(video_url) + " } }]"
                   + metadata_str +
                   "}) {"
@@ -444,7 +458,6 @@ jobs:
               )
 
               payload = json.dumps({"query": mutation}).encode("utf-8")
-
               req = urllib.request.Request(
                   "https://api.buffer.com/graphql",
                   data=payload,
@@ -457,9 +470,8 @@ jobs:
               try:
                   with urllib.request.urlopen(req) as res:
                       body = json.loads(res.read().decode("utf-8"))
-                  print(f"✅ Buffer API Response for {channel_id}:")
+                  print(f"✅ Buffer response ({channel_id}):")
                   print(json.dumps(body, indent=2))
               except urllib.error.HTTPError as e:
-                  print(f"❌ HTTP Error {e.code} for channel {channel_id}: {e.read().decode()}")
-                  continue
+                  print(f"❌ HTTP Error {e.code} untuk {channel_id}: {e.read().decode()}")
           PYEOF
