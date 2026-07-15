@@ -190,7 +190,6 @@ jobs:
           # Konfigurasi generasi menggunakan object config baru
           generation_config = types.GenerateContentConfig(
               max_output_tokens=65536,
-              thinking_level="medium"
           )
 
           # Panggil model menggunakan method dari SDK baru
