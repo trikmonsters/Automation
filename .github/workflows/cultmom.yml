@@ -41,7 +41,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-          pip install opencv-python-headless requests google-genai --quiet
+          pip install opencv-python-headless requests --quiet
 
       - name: Install Playwright Dependencies
         run: |
@@ -114,17 +114,13 @@ jobs:
           import sys
           import time
           import subprocess
-          from google import genai
-          from google.genai import types
+          import requests
 
-          # ── Setup API (SDK Baru) ─────────────────────────────────────
+          # ── Setup API (Native REST API via requests) ─────────────────
           api_key = os.environ.get("GEMINI_API_KEY", "").strip()
           if not api_key:
               print("❌ GEMINI_API_KEY kosong! Cek secret di repo settings.")
               sys.exit(1)
-          
-          # Inisialisasi client baru
-          client = genai.Client(api_key=api_key)
 
           input_caption = os.environ.get("INPUT_CAPTION", "").strip()
           video_path    = "video.mp4"
@@ -158,21 +154,54 @@ jobs:
           subprocess.run(cmd_sample, shell=True, check=True)
           print("✅ Sample video siap dikirim ke Gemini.")
 
-          # ── Upload sample via SDK Baru & tunggu proses ───────────────
-          print("🚀 Mengunggah sample ke Google Gemini API...")
-          video_file = client.files.upload(file=sample_path)
-          print("⏳ Menunggu Gemini memproses video...")
+          # ── 1. Upload File ke File API (Resumable Upload) ────────────
+          print("🚀 Mengunggah sample ke Google Gemini File API...")
+          file_size = os.path.getsize(sample_path)
           
-          while video_file.state.name == "PROCESSING":
-              time.sleep(2)
-              video_file = client.files.get(name=video_file.name)
-              
-          if video_file.state.name == "FAILED":
-              print("❌ Gemini gagal memproses video.")
-              sys.exit(1)
-          print("🤖 AI siap menganalisis!")
+          # Hubungi endpoint upload untuk inisialisasi metadata
+          upload_url = f"https://generativelanguage.googleapis.com/upload/v1beta/files?key={api_key}"
+          headers = {
+              "X-Goog-Upload-Protocol": "resumable",
+              "X-Goog-Upload-Command": "start",
+              "X-Goog-Upload-Header-Content-Length": str(file_size),
+              "X-Goog-Upload-Header-Content-Type": "video/mp4",
+              "Content-Type": "application/json"
+          }
+          metadata = {"file": {"displayName": "sample_video"}}
+          
+          res_init = requests.post(upload_url, headers=headers, json=metadata)
+          upload_session_url = res_init.headers.get("X-Goog-Upload-URL")
 
-          # ── Prompt & Generasi Konten ─────────────────────────────────
+          # Unggah byte file video secara aktual
+          with open(sample_path, "rb") as f:
+              upload_headers = {
+                  "X-Goog-Upload-Offset": "0",
+                  "X-Goog-Upload-Command": "upload, finalize",
+                  "Content-Type": "video/mp4"
+              }
+              res_upload = requests.post(upload_session_url, headers=upload_headers, data=f)
+
+          file_info = res_upload.json()
+          file_uri = file_info["file"]["uri"]
+          file_name = file_info["file"]["name"]
+          print(f"✅ File berhasil diunggah. URI: {file_uri}")
+
+          # ── 2. Polling Status Proses Video ───────────────────────────
+          print("⏳ Menunggu Gemini memproses video...")
+          get_file_url = f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key}"
+          
+          while True:
+              res_check = requests.get(get_file_url).json()
+              state = res_check.get("state", "PROCESSING")
+              if state == "ACTIVE":
+                  print("🤖 AI siap menganalisis!")
+                  break
+              elif state == "FAILED":
+                  print("❌ Gemini gagal memproses video.")
+                  sys.exit(1)
+              time.sleep(2)
+
+          # ── 3. Generate Content menggunakan REST API ──────────────────
           prompt = """
           Tonton cuplikan video media sosial ini dengan seksama.
           Pahami jalan ceritanya, ekspresi, teks, dan visualnya.
@@ -187,19 +216,33 @@ jobs:
           }
           """
 
-          # Konfigurasi generasi menggunakan object config baru
-          generation_config = types.GenerateContentConfig(
-              max_output_tokens=65536,
-          )
-
-          # Panggil model menggunakan method dari SDK baru
-          response = client.models.generate_content(
-              model='gemini-3.5-flash',
-              contents=[video_file, prompt],
-              config=generation_config
-          )
+          generate_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={api_key}"
           
-          raw_text = response.text.replace("```json", "").replace("```", "").strip()
+          # Payload murni REST API (Tanpa konfigurasi thinking)
+          payload = {
+              "contents": [
+                  {
+                      "parts": [
+                          {"fileData": {"fileUri": file_uri, "mimeType": "video/mp4"}},
+                          {"text": prompt}
+                      ]
+                  }
+              ],
+              "generationConfig": {
+                  "maxOutputTokens": 65536,
+                  "responseMimeType": "application/json"
+              }
+          }
+
+          res_generate = requests.post(generate_url, json=payload)
+          response_json = res_generate.json()
+          
+          try:
+              raw_text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+          except KeyError:
+              print(f"❌ Respons API tidak sesuai terduga: {response_json}")
+              raw_text = "{}"
+
           print(f"\n📨 Raw JSON dari Gemini:\n{raw_text}\n")
 
           # ── Parse JSON & hitung koordinat PIKSEL dari video ASLI ─────
@@ -264,9 +307,10 @@ jobs:
           with open("buffer_caption.txt", "w", encoding="utf-8") as f:
               f.write(buffer_caption)
 
-          # Hapus file cloud via SDK Baru
+          # ── 4. Hapus File dari Cloud Cloud via REST API ──────────────
           try:
-              client.files.delete(name=video_file.name)
+              delete_url = f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key}"
+              requests.delete(delete_url)
               print("🗑️  File Gemini dihapus.")
           except Exception:
               pass
@@ -293,7 +337,8 @@ jobs:
 
           echo "✅ Crop tervalidasi: W=${CROP_W}, H=${CROP_H}, X=${CROP_X}, Y=${CROP_Y}"
 
-          FONT_PATH="/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+          # Menggunakan font Bold (LiberationSans-Bold.ttf)
+          FONT_PATH="/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
           if [ ! -f "$FONT_PATH" ]; then
             sudo apt-get install -y fonts-liberation -qq
           fi
@@ -307,11 +352,12 @@ jobs:
           if [ "$TEXT_EMPTY" = true ]; then
             echo "ℹ️  Tidak ada teks overlay — crop & scale standar dari video asli..."
 
+            # Mengubah background pad menjadi hitam (:black)
             ffmpeg -i "video.mp4" \
               -vf "crop=${CROP_W}:${CROP_H}:${CROP_X}:${CROP_Y},\
                    hflip,\
                    scale=1080:1920:force_original_aspect_ratio=decrease,\
-                   pad=1080:1920:(ow-iw)/2:(oh-ih)/2:white" \
+                   pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black" \
               -c:v libx264 -crf 20 -c:a aac -b:a 128k \
               "output_final.mp4" -y -loglevel quiet
 
@@ -326,17 +372,22 @@ jobs:
 
             echo "   Scaled H : ${SCALED_H}px | Top Pad : ${TOP_PAD}px | Text Y : ${TEXT_Y}px"
 
+            # PERUBAHAN FFMEPG:
+            # 1. pad dibuah menjadi :black (Background Hitam)
+            # 2. fontcolor diubah menjadi white (Teks Putih)
+            # 3. bordercolor diubah menjadi black
+            # 4. FONT_PATH diarahkan ke font Bold (.ttf)
             ffmpeg -i "video.mp4" \
               -vf "crop=${CROP_W}:${CROP_H}:${CROP_X}:${CROP_Y},\
                    hflip,\
                    scale=1080:1920:force_original_aspect_ratio=decrease,\
                    unsharp=5:5:1.0:5:5:0.0,\
-                   pad=1080:1920:(ow-iw)/2:(oh-ih)/2:white,\
+                   pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,\
                    drawtext=fontfile=${FONT_PATH}:\
                    textfile=text_overlay.txt:\
                    x=(w-text_w)/2:y=${TEXT_Y}:\
-                   fontsize=48:fontcolor=black:\
-                   borderw=2:bordercolor=white" \
+                   fontsize=48:fontcolor=white:\
+                   borderw=2:bordercolor=black" \
               -c:v libx264 -crf 20 -c:a aac -b:a 128k \
               "output_final.mp4" -y -loglevel quiet
           fi
