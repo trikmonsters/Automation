@@ -45,71 +45,67 @@ jobs:
 
             const browser = await chromium.launch({ headless: true });
             const context = await browser.newContext({
-              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
               viewport: { width: 1280, height: 720 },
               locale: 'en-US'
             });
             const page = await context.newPage();
 
             try {
+              // Uji coba sssinstagram dahulu
               console.log('🌐 Membuka sssinstagram.com...');
-              // Menggunakan networkidle untuk memastikan seluruh script eksternal selesai dimuat
-              await page.goto('https://sssinstagram.com', { waitUntil: 'networkidle', timeout: 45000 });
-              
-              // 📸 SCREENSHOT 1: Setelah membuka website
+              await page.goto('https://sssinstagram.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
               await page.screenshot({ path: 'step1_homepage.png', fullPage: true });
-              console.log('📸 Screenshot 1 disimpan: step1_homepage.png');
-
-              // PERUBAHAN 1: Menggunakan selektor berbasis atribut generic agar tidak terpengaruh perubahan class CSS random
-              const inputSelector = 'input[type="text"], input[placeholder*="link"], input[placeholder*="Link"], #input, input.form__input';
-              console.log('⏳ Menunggu kolom input muncul...');
-              await page.waitForSelector(inputSelector, { timeout: 20000 });
               
+              let inputSelector = 'input[type="text"], input[placeholder*="link"], #input';
+              
+              // Jika sssinstagram tidak merespons, alihkan otomatis ke fastdl.app (Alternatif Populer)
+              try {
+                await page.waitForSelector(inputSelector, { timeout: 8000 });
+              } catch(e) {
+                console.log('⚠️ sssinstagram lambat/berubah. Mencoba alternatif fastdl.app...');
+                await page.goto('https://fastdl.app', { waitUntil: 'domcontentloaded', timeout: 30000 });
+                await page.screenshot({ path: 'step1_homepage_alt.png', fullPage: true });
+                inputSelector = 'input#search-form-input, input[type="search"], input[type="text"]';
+                await page.waitForSelector(inputSelector, { timeout: 15000 });
+              }
+
               console.log('✍️  Mengisi URL Instagram...');
               await page.fill(inputSelector, igUrl);
 
               console.log('⚡ Mengirim URL...');
-              // PERUBAHAN 2: Beberapa web memblokir aksi 'Enter' langsung di form. Kita cari tombol submit-nya atau gunakan kombinasi click
-              const submitBtnSelector = 'button[type="submit"], form button, .form__btn';
+              const submitBtnSelector = 'button[type="submit"], form button, #search-form-btn';
               const submitBtn = await page.$(submitBtnSelector);
-              
               if (submitBtn) {
                 await submitBtn.click();
               } else {
                 await page.press(inputSelector, 'Enter');
               }
               
-              // Tunggu proses render hasil pencarian
-              await page.waitForTimeout(5000); 
-              
-              // 📸 SCREENSHOT 2: Setelah tombol kirim ditekan
+              await page.waitForTimeout(6000); 
               await page.screenshot({ path: 'step2_submitted.png', fullPage: true });
-              console.log('📸 Screenshot 2 disimpan: step2_submitted.png');
 
-              // PERUBAHAN 3: Selektor download dibuat lebih luas (mencari elemen tautan dengan teks download atau tombol unduh)
-              const downloadBtnSelector = 'a[download], a.button__download, a.download-link, a[href*="dl"]';
-              await page.waitForSelector(downloadBtnSelector, { timeout: 45000 });
+              const downloadBtnSelector = 'a[download], a.button__download, a.download-link, a.button-download, a[href*="dl"]';
+              await page.waitForSelector(downloadBtnSelector, { timeout: 30000 });
 
               const downloadUrl = await page.getAttribute(downloadBtnSelector, 'href');
-              console.log(`🔗 Link video didapatkan! Mengunduh dari: ${downloadUrl}`);
+              console.log(`🔗 Link video didapatkan! Mengunduh...`);
 
               const response = await context.request.get(downloadUrl);
               const videoBuffer = await response.body();
 
               fs.writeFileSync('video.mp4', videoBuffer);
-              console.log('✅ Video disimpan sebagai video.mp4');
+              console.log('✅ Video sukses disimpan sebagai video.mp4');
 
             } catch (error) {
               console.error('❌ Gagal mengunduh video:', error.message);
-              
-              // 📸 SCREENSHOT ERROR: Jika proses gagal di tengah jalan
               try {
                 await page.screenshot({ path: 'step_error.png', fullPage: true });
                 console.log('📸 Screenshot Error disimpan: step_error.png');
               } catch (ssError) {
                 console.error('⚠️ Gagal mengambil screenshot error:', ssError.message);
               }
-              process.exit(1);
+              // PERUBAHAN KRUSIAL: Jangan gunakan process.exit(1) agar GitHub Actions tidak mematikan workflow di sini
             } finally {
               await browser.close();
             }
@@ -141,7 +137,8 @@ jobs:
             --title "Debug & Test Assets" \
             --notes "Aset hasil pengujian unduhan dan screenshot otomatis."
             
-          for file in step1_homepage.png step2_submitted.png step_error.png video.mp4; do
+          # Loop upload dipastikan memeriksa file secara independen
+          for file in step1_homepage.png step1_homepage_alt.png step2_submitted.png step_error.png video.mp4; do
             if [ -f "$file" ]; then
               echo "📤 Mengunggah $file..."
               gh release upload test_debug_assets "$file" --repo "${{ github.repository }}"
@@ -149,4 +146,4 @@ jobs:
               echo "ℹ️ File $file tidak ditemukan (dilewati)."
             fi
           done
-          echo "✅ Semua aset berhasil diunggah ke Release!"
+          echo "✅ Selesai memeriksa semua aset debug!"
