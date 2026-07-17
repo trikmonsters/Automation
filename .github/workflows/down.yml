@@ -45,38 +45,53 @@ jobs:
 
             const browser = await chromium.launch({ headless: true });
             const context = await browser.newContext({
-              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-              viewport: { width: 1280, height: 720 }
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+              viewport: { width: 1280, height: 720 },
+              locale: 'en-US'
             });
             const page = await context.newPage();
 
             try {
               console.log('🌐 Membuka sssinstagram.com...');
-              await page.goto('https://sssinstagram.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
+              // Menggunakan networkidle untuk memastikan seluruh script eksternal selesai dimuat
+              await page.goto('https://sssinstagram.com', { waitUntil: 'networkidle', timeout: 45000 });
               
               // 📸 SCREENSHOT 1: Setelah membuka website
               await page.screenshot({ path: 'step1_homepage.png', fullPage: true });
               console.log('📸 Screenshot 1 disimpan: step1_homepage.png');
 
-              const inputSelector = '#input, input.form__input';
-              await page.waitForSelector(inputSelector, { timeout: 15000 });
+              // PERUBAHAN 1: Menggunakan selektor berbasis atribut generic agar tidak terpengaruh perubahan class CSS random
+              const inputSelector = 'input[type="text"], input[placeholder*="link"], input[placeholder*="Link"], #input, input.form__input';
+              console.log('⏳ Menunggu kolom input muncul...');
+              await page.waitForSelector(inputSelector, { timeout: 20000 });
+              
+              console.log('✍️  Mengisi URL Instagram...');
               await page.fill(inputSelector, igUrl);
 
               console.log('⚡ Mengirim URL...');
-              await page.press(inputSelector, 'Enter');
+              // PERUBAHAN 2: Beberapa web memblokir aksi 'Enter' langsung di form. Kita cari tombol submit-nya atau gunakan kombinasi click
+              const submitBtnSelector = 'button[type="submit"], form button, .form__btn';
+              const submitBtn = await page.$(submitBtnSelector);
               
-              // Tunggu proses loading di web sesaat sebelum ambil screenshot kedua
-              await page.waitForTimeout(3000); 
+              if (submitBtn) {
+                await submitBtn.click();
+              } else {
+                await page.press(inputSelector, 'Enter');
+              }
               
-              // 📸 SCREENSHOT 2: Setelah tombol enter ditekan
+              // Tunggu proses render hasil pencarian
+              await page.waitForTimeout(5000); 
+              
+              // 📸 SCREENSHOT 2: Setelah tombol kirim ditekan
               await page.screenshot({ path: 'step2_submitted.png', fullPage: true });
               console.log('📸 Screenshot 2 disimpan: step2_submitted.png');
 
-              const downloadBtnSelector = 'a.button__download, a[download="true"]';
+              // PERUBAHAN 3: Selektor download dibuat lebih luas (mencari elemen tautan dengan teks download atau tombol unduh)
+              const downloadBtnSelector = 'a[download], a.button__download, a.download-link, a[href*="dl"]';
               await page.waitForSelector(downloadBtnSelector, { timeout: 45000 });
 
               const downloadUrl = await page.getAttribute(downloadBtnSelector, 'href');
-              console.log('🔗 Link video didapatkan! Mengunduh...');
+              console.log(`🔗 Link video didapatkan! Mengunduh dari: ${downloadUrl}`);
 
               const response = await context.request.get(downloadUrl);
               const videoBuffer = await response.body();
@@ -121,14 +136,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "📦 Membuat GitHub Release baru untuk aset debug..."
-          
-          # Buat draft/release kosongan terlebih dahulu
           gh release create test_debug_assets \
             --repo "${{ github.repository }}" \
             --title "Debug & Test Assets" \
             --notes "Aset hasil pengujian unduhan dan screenshot otomatis."
             
-          # Upload file gambar dan video satu per satu secara terpisah
           for file in step1_homepage.png step2_submitted.png step_error.png video.mp4; do
             if [ -f "$file" ]; then
               echo "📤 Mengunggah $file..."
@@ -137,5 +149,4 @@ jobs:
               echo "ℹ️ File $file tidak ditemukan (dilewati)."
             fi
           done
-          
           echo "✅ Semua aset berhasil diunggah ke Release!"
