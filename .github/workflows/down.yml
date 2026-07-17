@@ -44,37 +44,37 @@ jobs:
           - id: "indown"
             name: "indown.io"
             url: "https://indown.io/reels"
-            input: "input#link, input[type='url'], input[type='text']"
-            button: "button#get-btn, button[type='submit']"
-            download: ".btn-group-vertical a, .btn-group-vertical button, a[href*='cdninstagram.com'], a[href*='indown.io/fetch']"
+            input: "input#link, input[name='link'], input[type='url']"
+            button: "button#get-btn, button[type='submit'], #get-btn"
+            download: "a[href*='cdninstagram.com'], a[href*='fetch'], .btn-group-vertical a, text=/Download/i"
 
           - id: "downreels"
             name: "downreels.com"
             url: "https://downreels.com/"
             input: "input[placeholder*='Instagram'], input[type='text'], #url"
             button: "button[type='submit'], form button, #download-btn"
-            download: "#downloadLinks .btn-dl-overlay-main, #downloadLinks button, .btn-dl-overlay-main, a.download-button"
+            download: "#downloadLinks a, a.download-button, text=/Download/i"
 
           - id: "snapinsta"
             name: "snapinsta.to"
             url: "https://snapinsta.to/en45/instagram-reels-downloader"
             input: "input#url, input[type='text']"
             button: "button#btn-download, button[type='submit']"
-            download: "a.btn-premium, a.download-media, a[title='Download Video'], a.is-success"
+            download: "a.download-media, a.btn-premium, a[title='Download Video'], text=/Download Video/i"
 
           - id: "saveclip"
             name: "saveclip.app"
             url: "https://saveclip.app/en8/instagram-reels-video-download"
             input: "input#s_input, input[type='text']"
             button: "button.btn-red, button[type='submit']"
-            download: "a.btn-premium, a.download-link, a[title='Download Video']"
+            download: "a.download-link, a.btn-premium, text=/Download Video/i"
 
           - id: "fastdl"
             name: "fastdl.app"
             url: "https://fastdl.app"
             input: "input#search-form-input, input[type='text']"
             button: "button#search-form-btn, button[type='submit']"
-            download: "a.button.button--filled.button__download, a.button__download, a[href*='media.fastdl.app/get'], .download-items-links a"
+            download: "a.button.button--filled.button__download, a.button__download, a[href*='media.fastdl.app/get'], text=/Download/i"
 
     steps:
       - name: Checkout Repository
@@ -112,7 +112,13 @@ jobs:
 
             const browser = await chromium.launch({ 
               headless: true,
-              args: ['--incognito', '--no-sandbox', '--disable-setuid-sandbox', '--disable-infobars']
+              args: [
+                '--incognito', 
+                '--no-sandbox', 
+                '--disable-setuid-sandbox', 
+                '--disable-infobars',
+                '--disable-blink-features=AutomationControlled'
+              ]
             });
 
             const context = await browser.newContext({
@@ -122,67 +128,92 @@ jobs:
               extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' }
             });
 
-            await context.addInitScript(() => {
-              Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-              Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            });
-
             const page = await context.newPage();
             let downloadSuccess = false;
 
             try {
-              await page.goto(srcUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
+              // Set timeout navigasi awal yang longgar
+              await page.goto(srcUrl, { waitUntil: 'networkidle', timeout: 45000 });
               await page.screenshot({ path: `step1_homepage_${srcId}.png`, fullPage: true });
 
-              await page.waitForSelector(srcInput, { timeout: 15000 });
-              await page.fill(srcInput, igUrl);
+              // Tunggu kolom input siap
+              await page.waitForSelector(srcInput, { timeout: 20000 });
+              await page.focus(srcInput);
+              
+              // EMULASI MANUSIA: Ketik URL perlahan untuk mengecoh deteksi bot
+              for (const char of igUrl) {
+                await page.keyboard.type(char, { delay: Math.floor(Math.random() * 30) + 10 });
+              }
+              await page.waitForTimeout(1000);
 
+              // Cari tombol submit
               const submitBtn = await page.$(srcButton);
-              if (submitBtn) { await submitBtn.click(); } else { await page.press(srcInput, 'Enter'); }
+              if (submitBtn) {
+                await submitBtn.hover();
+                await page.waitForTimeout(500);
+                await submitBtn.click();
+              } else {
+                await page.press(srcInput, 'Enter');
+              }
 
-              await page.waitForTimeout(12000);
+              // Memberikan waktu ekstra bagi server untuk memproses video & meloloskan verifikasi background
+              console.log(`⏳ Menunggu proses konversi server (Maks 60 detik)...`);
+              await page.waitForTimeout(15000);
               await page.screenshot({ path: `step2_submitted_${srcId}.png`, fullPage: true });
 
-              console.log(`⏳ Menunggu tautan unduhan dirender (Maks 60 detik)...`);
-              await page.waitForSelector(srcDownload, { timeout: 60000 });
-
+              // Menanti tombol download muncul di halaman halaman
+              await page.waitForSelector(srcDownload, { timeout: 45000 });
               const downloadElement = await page.$(srcDownload);
-              let downloadUrl = "";
-              const tagName = await page.evaluate(el => el.tagName.toLowerCase(), downloadElement);
-
-              if (tagName === 'button' || tagName === 'div') {
-                downloadUrl = await page.evaluate(el => {
-                  const anchor = el.closest('a') || el.querySelector('a');
-                  return anchor ? anchor.href : el.getAttribute('data-url') || el.getAttribute('data-href');
-                }, downloadElement);
-
-                if (!downloadUrl) {
-                  console.log(`🔄 Target berupa tombol tanpa href, merekam stream via klik langsung...`);
+              
+              if (downloadElement) {
+                const tagName = await page.evaluate(el => el.tagName.toLowerCase(), downloadElement);
+                
+                // Pendekatan Utama: Klik Alami Browser (Meloloskan Cookie/Token Fastdl & Indown)
+                try {
+                  console.log(`🔄 Mengemulasikan klik pada elemen download [${tagName}]...`);
+                  await downloadElement.hover();
+                  
                   const [downloadEvent] = await Promise.all([
-                    page.waitForEvent('download', { timeout: 45000 }),
-                    downloadElement.click()
+                    page.waitForEvent('download', { timeout: 60000 }),
+                    downloadElement.click({ force: true })
                   ]);
+                  
                   await downloadEvent.saveAs(`video_${srcId}.mp4`);
                   downloadSuccess = true;
+                  console.log(`✅ Sukses! video_${srcId}.mp4 berhasil disimpan via Event Browser.`);
+                } catch (clickError) {
+                  console.log(`⚠️ Klik langsung gagal/tidak memicu stream berkas. Menjalankan metode ekstraksi URL...`);
                 }
-              } else {
-                downloadUrl = await page.getAttribute(srcDownload, 'href');
-              }
 
-              if (downloadUrl && !downloadSuccess) {
-                console.log(`🔗 Link video didapatkan. Mendownload stream data...`);
-                const response = await context.request.get(downloadUrl, { timeout: 45000 });
-                const videoBuffer = await response.body();
-                fs.writeFileSync(`video_${srcId}.mp4`, videoBuffer);
-                downloadSuccess = true;
-              }
+                // Pendekatan Cadangan: Ekstraksi tautan manual jika klik langsung terhalang iklan
+                if (!downloadSuccess) {
+                  let downloadUrl = await page.evaluate(el => {
+                    const anchor = el.closest('a') || el.querySelector('a');
+                    return anchor ? anchor.href : el.getAttribute('href') || el.getAttribute('data-url');
+                  }, downloadElement);
 
-              if (downloadSuccess) {
-                console.log(`✅ Selesai! File video_${srcId}.mp4 sukses ditulis.`);
+                  if (downloadUrl && downloadUrl.startsWith('http')) {
+                    console.log(`🔗 Link alternatif ditemukan. Mengunduh via halaman isolasi baru...`);
+                    const downloadPage = await context.newPage();
+                    try {
+                      const [downloadEvent] = await Promise.all([
+                        downloadPage.waitForEvent('download', { timeout: 60000 }),
+                        downloadPage.goto(downloadUrl).catch(() => {})
+                      ]);
+                      await downloadEvent.saveAs(`video_${srcId}.mp4`);
+                      downloadSuccess = true;
+                      console.log(`✅ Sukses! video_${srcId}.mp4 ditulis via Halaman Isolasi.`);
+                    } catch (err) {
+                      console.error(`❌ Seluruh metode pengunduhan gagal pada tautan ini:`, err.message);
+                    } finally {
+                      await downloadPage.close();
+                    }
+                  }
+                }
               }
 
             } catch (error) {
-              console.error(`❌ Gangguan pada ${srcId}:`, error.message);
+              console.error(`❌ Gangguan pada mesin ${srcId}:`, error.message);
               try { await page.screenshot({ path: `step_error_${srcId}.png`, fullPage: true }); } catch (e) {}
             } finally {
               await context.close();
