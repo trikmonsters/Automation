@@ -211,7 +211,6 @@ jobs:
           print("🚀 Mengunggah sample ke Google Gemini File API...")
           file_size = os.path.getsize(sample_path)
           
-          # Hubungi endpoint upload untuk inisialisasi metadata
           upload_url = f"https://generativelanguage.googleapis.com/upload/v1beta/files?key={api_key}"
           headers = {
               "X-Goog-Upload-Protocol": "resumable",
@@ -225,7 +224,6 @@ jobs:
           res_init = requests.post(upload_url, headers=headers, json=metadata)
           upload_session_url = res_init.headers.get("X-Goog-Upload-URL")
 
-          # Unggah byte file video secara aktual
           with open(sample_path, "rb") as f:
               upload_headers = {
                   "X-Goog-Upload-Offset": "0",
@@ -254,7 +252,7 @@ jobs:
                   sys.exit(1)
               time.sleep(2)
 
-          # ── 3. Generate Content menggunakan REST API ──────────────────
+          # ── 3. Generate Content dengan Model Sesuai Request & 5x Retry ──
           prompt = """
           Tonton cuplikan video media sosial ini dengan seksama.
           Pahami jalan ceritanya, ekspresi, teks, dan visualnya.
@@ -269,9 +267,6 @@ jobs:
           }
           """
 
-          generate_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={api_key}"
-          
-          # Payload murni REST API (Tanpa konfigurasi thinking)
           payload = {
               "contents": [
                   {
@@ -287,14 +282,44 @@ jobs:
               }
           }
 
-          res_generate = requests.post(generate_url, json=payload)
-          response_json = res_generate.json()
-          
-          try:
-              raw_text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
-          except KeyError:
-              print(f"❌ Respons API tidak sesuai terduga: {response_json}")
-              raw_text = "{}"
+          models = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
+          max_retries = 5
+          retry_delay = 20
+          raw_text = "{}"
+          success = False
+
+          for model in models:
+              if success:
+                  break
+                  
+              print(f"\n🔄 Mencoba menggunakan model: {model}")
+              generate_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+
+              for attempt in range(max_retries):
+                  print(f"📡 Mengirim permintaan ke {model} (Percobaan {attempt + 1}/{max_retries})...")
+                  try:
+                      res_generate = requests.post(generate_url, json=payload, timeout=90)
+                      response_json = res_generate.json()
+                      
+                      if res_generate.status_code == 200:
+                          if "candidates" in response_json and len(response_json["candidates"]) > 0:
+                              raw_text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+                              print(f"🎉 Sukses mendapatkan respons dari {model}!")
+                              success = True
+                              break
+                          else:
+                              print(f"⚠️ Respons status 200 tapi format kosong: {response_json}")
+                      
+                      elif res_generate.status_code in [429, 503, 504]:
+                          print(f"⚠️ Server sibuk ({res_generate.status_code}). Mencoba ulang dalam {retry_delay} detik...")
+                          time.sleep(retry_delay)
+                      else:
+                          print(f"❌ Kesalahan API ({res_generate.status_code}): {response_json}")
+                          break  # Jika error permanen, langsung ganti ke model cadangan
+                          
+                  except requests.exceptions.RequestException as req_err:
+                      print(f"⚠️ Gangguan koneksi jaringan: {req_err}. Mencoba ulang...")
+                      time.sleep(retry_delay)
 
           print(f"\n📨 Raw JSON dari Gemini:\n{raw_text}\n")
 
@@ -323,7 +348,7 @@ jobs:
               print(f"   Hook     : {text_overlay}")
 
           except Exception as e:
-              print(f"⚠️  Gagal parse JSON AI ({e}) — pakai fallback default")
+              print(f"⚠️ Gagal parse JSON AI ({e}) — pakai fallback default")
               crop_x, crop_y  = 0, int(full_h * 0.34)
               crop_w          = full_w
               crop_h          = int(full_h * 0.32)
@@ -364,7 +389,7 @@ jobs:
           try:
               delete_url = f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key}"
               requests.delete(delete_url)
-              print("🗑️  File Gemini dihapus.")
+              print("🗑️  File Gemini di cloud telah dibersihkan.")
           except Exception:
               pass
 
