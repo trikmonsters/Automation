@@ -1,4 +1,4 @@
-name: Test Download & Debug Screenshot
+name: Parallel Multi-Web Download & Debug
 
 on:
   workflow_dispatch:
@@ -12,8 +12,79 @@ permissions:
   contents: write
 
 jobs:
-  test-download:
+  # Job Awal: Membersihkan rilis aset lama agar tidak menumpuk sebelum proses paralel dimulai
+  prepare-release:
     runs-on: ubuntu-latest
+    steps:
+      - name: Delete old debug release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🗑️ Memeriksa dan menghapus release lama jika ada..."
+          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases \
+            --jq '.[] | select(.tag_name == "test_debug_assets") | .id' 2>/dev/null || echo "")
+          if [ -n "$RELEASE_ID" ]; then
+            gh api -X DELETE repos/${{ github.repository }}/releases/$RELEASE_ID || true
+            sleep 2
+          fi
+          gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/test_debug_assets || true
+          
+          echo "📦 Membuat Wadah GitHub Release Baru..."
+          gh release create test_debug_assets \
+            --repo "${{ github.repository }}" \
+            --title "Debug & Test Assets (Parallel Mode)" \
+            --notes "Aset dikumpulkan secara real-time dari beberapa web target."
+
+  # Job Utama: Dijalankan secara PARALEL memanfaatkan matriks GitHub Actions
+  download-engine:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # Memastikan jika 1 web error/timeout, web lain TIDAK ikut dibatalkan
+      matrix:
+        source: [
+          {
+            id: "indown",
+            name: "indown.io",
+            url: "https://indown.io/reels",
+            input: "input#link, input[type='url'], input[type='text']",
+            button: "button#get-btn, button[type='submit']",
+            download: ".btn-group-vertical a, .btn-group-vertical button, a[href*='cdninstagram.com'], a[href*='indown.io/fetch']"
+          },
+          {
+            id: "downreels",
+            name: "downreels.com",
+            url: "https://downreels.com/",
+            input: "input[placeholder*='Instagram'], input[type='text'], #url",
+            button: "button[type='submit'], form button, #download-btn",
+            download: "#downloadLinks .btn-dl-overlay-main, #downloadLinks button, .btn-dl-overlay-main, a.download-button"
+          },
+          {
+            id: "snapinsta",
+            name: "snapinsta.to",
+            url: "https://snapinsta.to/en45/instagram-reels-downloader",
+            input: "input#url, input[type='text']",
+            button: "button#btn-download, button[type='submit']",
+            download: "a.btn-premium, a.download-media, a[title='Download Video'], a.is-success"
+          },
+          {
+            id: "saveclip",
+            name: "saveclip.app",
+            url: "https://saveclip.app/en8/instagram-reels-video-download",
+            input: "input#s_input, input[type='text']",
+            button: "button.btn-red, button[type='submit']",
+            download: "a.btn-premium, a.download-link, a[title='Download Video']"
+          },
+          {
+            id: "fastdl",
+            name: "fastdl.app",
+            url: "https://fastdl.app",
+            input: "input#search-form-input, input[type='text']",
+            button: "button#search-form-btn, button[type='submit']",
+            // Ditargetkan langsung menggunakan elemen class spesifik dan pola url media.fastdl.app Anda
+            download: "a.button.button--filled.button__download, a.button__download, a[href*='media.fastdl.app/get'], .download-items-links a"
+          }
+        ]
 
     steps:
       - name: Checkout Repository
@@ -30,9 +101,9 @@ jobs:
           npm install playwright playwright-extra puppeteer-extra-plugin-stealth
           npx playwright install chromium --with-deps
 
-      - name: Download Video & Take Debug Screenshots
+      - name: Execute Download In Incognito
         run: |
-          cat << 'EOF' > download_ig.js
+          cat << 'EOF' > run_download.js
           const { chromium } = require('playwright-extra');
           const stealth = require('puppeteer-extra-plugin-stealth')();
           const fs = require('fs');
@@ -41,180 +112,108 @@ jobs:
 
           (async () => {
             const igUrl = process.argv[2] || "";
-            if (!igUrl) {
-              console.error("❌ URL Instagram kosong!");
-              process.exit(0);
-            }
+            const srcId = process.argv[3];
+            const srcUrl = process.argv[4];
+            const srcInput = process.argv[5];
+            const srcButton = process.argv[6];
+            const srcDownload = process.argv[7];
 
-            console.log(`🚀 Memulai proses unduh untuk URL: ${igUrl}`);
+            console.log(`🚀 [${srcId}] Memulai pemicu unduh: ${igUrl}`);
 
-            const downloadSources = [
-              {
-                name: "sssinstagram.com",
-                url: "https://sssinstagram.com",
-                input: "input[type='text'], input[placeholder*='link'], #input",
-                button: "button[type='submit'], form button, .form__btn",
-                download: "a[download], a.button__download, a[href*='dl']"
-              },
-              {
-                name: "downreels.com",
-                url: "https://downreels.com/",
-                input: "input[placeholder*='Instagram'], input[type='text'], #url",
-                button: "button[type='submit'], form button, #download-btn",
-                download: "a.download-button, a[href*='download'], a[target='_blank']"
-              },
-              {
-                name: "snapinsta.to",
-                url: "https://snapinsta.to/en45/instagram-reels-downloader",
-                input: "input#url, input[type='text'], input[placeholder*='Link']",
-                button: "button#btn-download, button[type='submit']",
-                download: "a.download-media, a[href*='download'], a.btn-download"
-              },
-              {
-                name: "saveclip.app",
-                url: "https://saveclip.app/en8/instagram-reels-video-download",
-                input: "input#s_input, input[type='text'], input[placeholder*='Link']",
-                button: "button.btn-red, button[type='submit']",
-                download: "a.download-link, a[href*='download']"
-              },
-              {
-                name: "fastvideosave.net",
-                url: "https://fastvideosave.net/",
-                input: "input[name='url'], input[type='text'], input[placeholder*='Link']",
-                button: "button[type='submit'], button.btn-download",
-                download: "a.download-btn, a[href*='dl'], a[href*='download']"
-              }
-            ];
-
-            // ── PERUBAHAN UTAMA: Memaksa mode Incognito penuh di tingkat mesin Chromium ──
+            // Paksa flag incognito murni level sistem
             const browser = await chromium.launch({ 
               headless: true,
-              args: [
-                '--incognito',                  // Aktifkan mode penyamaran/incognito penuh
-                '--no-sandbox',                 // Standar keamanan sandbox untuk docker/GitHub runner
-                '--disable-setuid-sandbox',
-                '--disable-infobars',           // Sembunyikan notifikasi kontrol otomatisasi
-                '--window-position=0,0'
-              ]
+              args: ['--incognito', '--no-sandbox', '--disable-setuid-sandbox', '--disable-infobars']
             });
-            
+
+            const context = await browser.newContext({
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+              viewport: { width: 1366, height: 768 },
+              locale: 'en-US',
+              extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' }
+            });
+
+            await context.addInitScript(() => {
+              Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+              Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            });
+
+            const page = await context.newPage();
             let downloadSuccess = false;
 
-            for (let i = 0; i < downloadSources.length; i++) {
-              const src = downloadSources[i];
-              console.log(`\n==============================================`);
-              console.log(`🌐 [Percobaan ${i+1}/${downloadSources.length}] Mencoba via: ${src.name} (Mode Incognito)`);
-              console.log(`==============================================`);
+            try {
+              await page.goto(srcUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
+              await page.screenshot({ path: `step1_homepage_${srcId}.png`, fullPage: true });
 
-              // Membuat Context Baru (Pristine Incognito Context - tanpa jejak cookies/cache web sebelumnya)
-              const context = await browser.newContext({
-                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                viewport: { width: 1366, height: 768 },
-                deviceScaleFactor: 1,
-                locale: 'en-US',
-                timezoneId: 'America/New_York',
-                geolocation: { longitude: -74.006, latitude: 40.7128 },
-                permissions: ['geolocation'],
-                extraHTTPHeaders: {
-                  'Accept-Language': 'en-US,en;q=0.9'
+              await page.waitForSelector(srcInput, { timeout: 15000 });
+              await page.fill(srcInput, igUrl);
+
+              const submitBtn = await page.$(srcButton);
+              if (submitBtn) { await submitBtn.click(); } else { await page.press(srcInput, 'Enter'); }
+
+              // Jeda render awal sebelum tangkapan layar kedua
+              await page.waitForTimeout(12000);
+              await page.screenshot({ path: `step2_submitted_${srcId}.png`, fullPage: true });
+
+              // Menunggu pemuatan tautan video (Maks 60 Detik untuk Server Rendering berat)
+              console.log(`⏳ Menunggu tautan unduhan dirender (Maks 60 detik)...`);
+              await page.waitForSelector(srcDownload, { timeout: 60000 });
+
+              const downloadElement = await page.$(srcDownload);
+              let downloadUrl = "";
+              const tagName = await page.evaluate(el => el.tagName.toLowerCase(), downloadElement);
+
+              // Logika Intersepsi jika element berupa tombol/bukan tautan langsung
+              if (tagName === 'button' || tagName === 'div') {
+                downloadUrl = await page.evaluate(el => {
+                  const anchor = el.closest('a') || el.querySelector('a');
+                  return anchor ? anchor.href : el.getAttribute('data-url') || el.getAttribute('data-href');
+                }, downloadElement);
+
+                if (!downloadUrl) {
+                  console.log(`🔄 Target berupa tombol tanpa href, merekam stream via klik langsung...`);
+                  const [downloadEvent] = await Promise.all([
+                    page.waitForEvent('download', { timeout: 45000 }),
+                    downloadElement.click()
+                  ]);
+                  await downloadEvent.saveAs(`video_${srcId}.mp4`);
+                  downloadSuccess = true;
                 }
-              });
-
-              // Hilangkan tanda-tanda bot di sisi Javascript halaman
-              await context.addInitScript(() => {
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-              });
-
-              const page = await context.newPage();
-
-              try {
-                await page.goto(src.url, { waitUntil: 'domcontentloaded', timeout: 25000 });
-                await page.screenshot({ path: `step1_homepage_${src.name.replace(/\./g, '_')}.png`, fullPage: true });
-                console.log(`📸 Screenshot awal disimpan untuk ${src.name}`);
-
-                console.log(`⏳ Mencari kolom input...`);
-                await page.waitForSelector(src.input, { timeout: 10000 });
-                await page.fill(src.input, igUrl);
-
-                console.log(`⚡ Mengirimkan URL Reel...`);
-                const submitBtn = await page.$(src.button);
-                if (submitBtn) {
-                  await submitBtn.click();
-                } else {
-                  await page.press(src.input, 'Enter');
-                }
-
-                await page.waitForTimeout(6000);
-                await page.screenshot({ path: `step2_submitted_${src.name.replace(/\./g, '_')}.png`, fullPage: true });
-
-                console.log(`⏳ Menunggu tautan unduhan dirender...`);
-                await page.waitForSelector(src.download, { timeout: 25000 });
-
-                const downloadUrl = await page.getAttribute(src.download, 'href');
-                console.log(`🔗 Link video didapatkan! Mengunduh...`);
-
-                const response = await context.request.get(downloadUrl);
-                const videoBuffer = await response.body();
-
-                fs.writeFileSync('video.mp4', videoBuffer);
-                console.log(`✅ Sukses! Video disimpan dari website: ${src.name}`);
-                downloadSuccess = true;
-                
-                await context.close();
-                break; 
-
-              } catch (error) {
-                console.error(`❌ Gagal pada ${src.name}:`, error.message);
-                try {
-                  await page.screenshot({ path: `step_error_${src.name.replace(/\./g, '_')}.png`, fullPage: true });
-                } catch (ssError) {
-                  console.error(`⚠️ Gagal menangkap screenshot error pada ${src.name}`);
-                }
-              } finally {
-                await context.close();
+              } else {
+                downloadUrl = await page.getAttribute(srcDownload, 'href');
               }
-            }
 
-            await browser.close();
+              if (downloadUrl && !downloadSuccess) {
+                console.log(`🔗 Link video didapatkan. Mendownload stream data...`);
+                const response = await context.request.get(downloadUrl, { timeout: 45000 });
+                const videoBuffer = await response.body();
+                fs.writeFileSync(`video_${srcId}.mp4`, videoBuffer);
+                downloadSuccess = true;
+              }
 
-            if (!downloadSuccess) {
-              console.log("\n💥 Seluruh 5 website alternatif gagal mengunduh video.");
+              if (downloadSuccess) {
+                console.log(`✅ Selesai! File video_${srcId}.mp4 sukses ditulis.`);
+              }
+
+            } catch (error) {
+              console.error(`❌ Gangguan pada ${srcId}:`, error.message);
+              try { await page.screenshot({ path: `step_error_${srcId}.png`, fullPage: true }); } catch (e) {}
+            } finally {
+              await context.close();
+              await browser.close();
             }
           })();
           EOF
-          node download_ig.js "${{ github.event.inputs.video_url }}"
+          node run_download.js "${{ github.event.inputs.video_url }}" "${{ matrix.source.id }}" "${{ matrix.source.url }}" "${{ matrix.source.input }}" "${{ matrix.source.button }}" "${{ matrix.source.download }}"
 
-      - name: Delete old debug release
+      - name: Upload Runner Assets to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "🗑️ Memeriksa dan menghapus release lama jika ada..."
-          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases \
-            --jq '.[] | select(.tag_name == "test_debug_assets") | .id' 2>/dev/null || echo "")
-          if [ -n "$RELEASE_ID" ]; then
-            gh api -X DELETE repos/${{ github.repository }}/releases/$RELEASE_ID || true
-            sleep 2
-          fi
-          gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/test_debug_assets || true
-          sleep 2
-
-      - name: Upload elements to GitHub Release (Tanpa Zip)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "📦 Membuat GitHub Release baru untuk aset debug..."
-          gh release create test_debug_assets \
-            --repo "${{ github.repository }}" \
-            --title "Debug & Test Assets (Multi-Web Option)" \
-            --notes "Aset hasil pengujian unduhan dari beberapa website alternatif."
-
           shopt -s nullglob
-          for file in *.png video.mp4; do
+          for file in *.png video_${{ matrix.source.id }}.mp4; do
             if [ -f "$file" ]; then
-              echo "📤 Mengunggah $file..."
-              gh release upload test_debug_assets "$file" --repo "${{ github.repository }}"
+              echo "📤 Memasukkan $file ke dalam rilis..."
+              gh release upload test_debug_assets "$file" --repo "${{ github.repository }}" --clobber
             fi
           done
-          echo "✅ Selesai memeriksa dan mengunggah semua aset debug!"
