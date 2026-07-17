@@ -49,7 +49,7 @@ jobs:
           npm install playwright playwright-extra puppeteer-extra-plugin-stealth
           npx playwright install chromium --with-deps
 
-      - name: Download Video via Playwright (SSSInstagram)
+      - name: Download Video via Playwright (Downreels Only)
         run: |
           cat << 'EOF' > download_ig.js
           const { chromium } = require('playwright-extra');
@@ -59,43 +59,96 @@ jobs:
           chromium.use(stealth);
 
           (async () => {
-            const igUrl = process.argv[2] || "https://instagram.com";
-            console.log(`🚀 Memulai proses unduh untuk URL: ${igUrl}`);
+            const igUrl = process.argv[2] || "";
+            
+            // Konfigurasi khusus untuk downreels.com
+            const srcId = "downreels";
+            const srcUrl = "https://downreels.com/";
+            const srcInput = "input[placeholder*='Instagram'], input[type='text'], #url";
+            const srcButton = "button[type='submit'], form button, #download-btn";
+            const srcDownload = "#downloadLinks .btn-dl-overlay-main, #downloadLinks button, .btn-dl-overlay-main, a.download-button";
 
-            const browser = await chromium.launch({ headless: true });
-            const context = await browser.newContext({
-              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-              viewport: { width: 1280, height: 720 }
+            console.log(`🚀 [${srcId}] Memulai pemicu unduh: ${igUrl}`);
+
+            const browser = await chromium.launch({ 
+              headless: true,
+              args: ['--incognito', '--no-sandbox', '--disable-setuid-sandbox', '--disable-infobars']
             });
+
+            const context = await browser.newContext({
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+              viewport: { width: 1366, height: 768 },
+              locale: 'en-US',
+              extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' }
+            });
+
+            await context.addInitScript(() => {
+              Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+              Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            });
+
             const page = await context.newPage();
+            let downloadSuccess = false;
 
             try {
-              console.log('🌐 Membuka sssinstagram.com...');
-              await page.goto('https://sssinstagram.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
+              await page.goto(srcUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
+              await page.screenshot({ path: `step1_homepage_${srcId}.png`, fullPage: true });
 
-              const inputSelector = '#input, input.form__input';
-              await page.waitForSelector(inputSelector, { timeout: 15000 });
-              await page.fill(inputSelector, igUrl);
+              await page.waitForSelector(srcInput, { timeout: 15000 });
+              await page.fill(srcInput, igUrl);
 
-              console.log('⚡ Mengirim URL...');
-              await page.press(inputSelector, 'Enter');
+              const submitBtn = await page.$(srcButton);
+              if (submitBtn) { await submitBtn.click(); } else { await page.press(srcInput, 'Enter'); }
 
-              const downloadBtnSelector = 'a.button__download, a[download="true"]';
-              await page.waitForSelector(downloadBtnSelector, { timeout: 45000 });
+              await page.waitForTimeout(12000);
+              await page.screenshot({ path: `step2_submitted_${srcId}.png`, fullPage: true });
 
-              const downloadUrl = await page.getAttribute(downloadBtnSelector, 'href');
-              console.log('🔗 Link video didapatkan! Mengunduh...');
+              console.log(`⏳ Menunggu tautan unduhan dirender (Maks 60 detik)...`);
+              await page.waitForSelector(srcDownload, { timeout: 60000 });
 
-              const response = await context.request.get(downloadUrl);
-              const videoBuffer = await response.body();
+              const downloadElement = await page.$(srcDownload);
+              let downloadUrl = "";
+              const tagName = await page.evaluate(el => el.tagName.toLowerCase(), downloadElement);
 
-              fs.writeFileSync('video.mp4', videoBuffer);
-              console.log('✅ Video disimpan sebagai video.mp4');
+              if (tagName === 'button' || tagName === 'div') {
+                downloadUrl = await page.evaluate(el => {
+                  const anchor = el.closest('a') || el.querySelector('a');
+                  return anchor ? anchor.href : el.getAttribute('data-url') || el.getAttribute('data-href');
+                }, downloadElement);
+
+                if (!downloadUrl) {
+                  console.log(`🔄 Target berupa tombol tanpa href, merekam stream via klik langsung...`);
+                  const [downloadEvent] = await Promise.all([
+                    page.waitForEvent('download', { timeout: 45000 }),
+                    downloadElement.click()
+                  ]);
+                  await downloadEvent.saveAs(`video.mp4`);
+                  downloadSuccess = true;
+                }
+              } else {
+                downloadUrl = await page.getAttribute(srcDownload, 'href');
+              }
+
+              if (downloadUrl && !downloadSuccess) {
+                console.log(`🔗 Link video didapatkan. Mendownload stream data...`);
+                const response = await context.request.get(downloadUrl, { timeout: 45000 });
+                const videoBuffer = await response.body();
+                fs.writeFileSync(`video.mp4`, videoBuffer);
+                downloadSuccess = true;
+              }
+
+              if (downloadSuccess) {
+                console.log(`✅ Selesai! File video.mp4 sukses ditulis.`);
+              } else {
+                throw new Error("Gagal mengekstrak URL unduhan.");
+              }
 
             } catch (error) {
-              console.error('❌ Gagal mengunduh video:', error.message);
+              console.error(`❌ Gangguan pada ${srcId}:`, error.message);
+              try { await page.screenshot({ path: `step_error_${srcId}.png`, fullPage: true }); } catch (e) {}
               process.exit(1);
             } finally {
+              await context.close();
               await browser.close();
             }
           })();
@@ -295,7 +348,7 @@ jobs:
               for w in words:
                   if len(cur) + len(w) > max_chars:
                       if cur: lines.append(cur.strip())
-                      cur = w + " "
+                      current = w + " "
                   else:
                       cur += w + " "
               if cur.strip(): lines.append(cur.strip())
@@ -337,7 +390,6 @@ jobs:
 
           echo "✅ Crop tervalidasi: W=${CROP_W}, H=${CROP_H}, X=${CROP_X}, Y=${CROP_Y}"
 
-          # Menggunakan font Bold (LiberationSans-Bold.ttf)
           FONT_PATH="/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
           if [ ! -f "$FONT_PATH" ]; then
             sudo apt-get install -y fonts-liberation -qq
@@ -352,7 +404,6 @@ jobs:
           if [ "$TEXT_EMPTY" = true ]; then
             echo "ℹ️  Tidak ada teks overlay — crop & scale standar dari video asli..."
 
-            # Mengubah background pad menjadi hitam (:black)
             ffmpeg -i "video.mp4" \
               -vf "crop=${CROP_W}:${CROP_H}:${CROP_X}:${CROP_Y},\
                    hflip,\
@@ -372,11 +423,6 @@ jobs:
 
             echo "   Scaled H : ${SCALED_H}px | Top Pad : ${TOP_PAD}px | Text Y : ${TEXT_Y}px"
 
-            # PERUBAHAN FFMEPG:
-            # 1. pad dibuah menjadi :black (Background Hitam)
-            # 2. fontcolor diubah menjadi white (Teks Putih)
-            # 3. bordercolor diubah menjadi black
-            # 4. FONT_PATH diarahkan ke font Bold (.ttf)
             ffmpeg -i "video.mp4" \
               -vf "crop=${CROP_W}:${CROP_H}:${CROP_X}:${CROP_Y},\
                    hflip,\
@@ -394,15 +440,6 @@ jobs:
 
           mv output_final.mp4 video.mp4
           echo "✅ Video selesai diproses dan siap di-upload!"
-
-          ffprobe -v quiet -print_format json -show_streams video.mp4 \
-            | python3 -c "
-          import json, sys
-          d = json.load(sys.stdin)
-          for s in d['streams']:
-            if s['codec_type'] == 'video':
-              print(f\"📹 Output: {s['width']}x{s['height']} | codec: {s['codec_name']}\")
-          "
 
       - name: Delete old release
         if: ${{ github.event.inputs.post_to_buffer == 'true' }}
