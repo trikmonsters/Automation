@@ -40,74 +40,147 @@ jobs:
           chromium.use(stealth);
 
           (async () => {
-            const igUrl = process.argv[2] || "https://instagram.com";
+            const igUrl = process.argv[2] || "";
+            if (!igUrl) {
+              console.error("❌ URL Instagram kosong!");
+              process.exit(0);
+            }
+
             console.log(`🚀 Memulai proses unduh untuk URL: ${igUrl}`);
 
-            const browser = await chromium.launch({ headless: true });
-            const context = await browser.newContext({
-              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-              viewport: { width: 1280, height: 720 },
-              locale: 'en-US'
+            const downloadSources = [
+              {
+                name: "sssinstagram.com",
+                url: "https://sssinstagram.com",
+                input: "input[type='text'], input[placeholder*='link'], #input",
+                button: "button[type='submit'], form button, .form__btn",
+                download: "a[download], a.button__download, a[href*='dl']"
+              },
+              {
+                name: "downreels.com",
+                url: "https://downreels.com/",
+                input: "input[placeholder*='Instagram'], input[type='text'], #url",
+                button: "button[type='submit'], form button, #download-btn",
+                download: "a.download-button, a[href*='download'], a[target='_blank']"
+              },
+              {
+                name: "snapinsta.to",
+                url: "https://snapinsta.to/en45/instagram-reels-downloader",
+                input: "input#url, input[type='text'], input[placeholder*='Link']",
+                button: "button#btn-download, button[type='submit']",
+                download: "a.download-media, a[href*='download'], a.btn-download"
+              },
+              {
+                name: "saveclip.app",
+                url: "https://saveclip.app/en8/instagram-reels-video-download",
+                input: "input#s_input, input[type='text'], input[placeholder*='Link']",
+                button: "button.btn-red, button[type='submit']",
+                download: "a.download-link, a[href*='download']"
+              },
+              {
+                name: "fastvideosave.net",
+                url: "https://fastvideosave.net/",
+                input: "input[name='url'], input[type='text'], input[placeholder*='Link']",
+                button: "button[type='submit'], button.btn-download",
+                download: "a.download-btn, a[href*='dl'], a[href*='download']"
+              }
+            ];
+
+            // ── PERUBAHAN UTAMA: Memaksa mode Incognito penuh di tingkat mesin Chromium ──
+            const browser = await chromium.launch({ 
+              headless: true,
+              args: [
+                '--incognito',                  // Aktifkan mode penyamaran/incognito penuh
+                '--no-sandbox',                 // Standar keamanan sandbox untuk docker/GitHub runner
+                '--disable-setuid-sandbox',
+                '--disable-infobars',           // Sembunyikan notifikasi kontrol otomatisasi
+                '--window-position=0,0'
+              ]
             });
-            const page = await context.newPage();
+            
+            let downloadSuccess = false;
 
-            try {
-              // Uji coba sssinstagram dahulu
-              console.log('🌐 Membuka sssinstagram.com...');
-              await page.goto('https://sssinstagram.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
-              await page.screenshot({ path: 'step1_homepage.png', fullPage: true });
-              
-              let inputSelector = 'input[type="text"], input[placeholder*="link"], #input';
-              
-              // Jika sssinstagram tidak merespons, alihkan otomatis ke fastdl.app (Alternatif Populer)
+            for (let i = 0; i < downloadSources.length; i++) {
+              const src = downloadSources[i];
+              console.log(`\n==============================================`);
+              console.log(`🌐 [Percobaan ${i+1}/${downloadSources.length}] Mencoba via: ${src.name} (Mode Incognito)`);
+              console.log(`==============================================`);
+
+              // Membuat Context Baru (Pristine Incognito Context - tanpa jejak cookies/cache web sebelumnya)
+              const context = await browser.newContext({
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                viewport: { width: 1366, height: 768 },
+                deviceScaleFactor: 1,
+                locale: 'en-US',
+                timezoneId: 'America/New_York',
+                geolocation: { longitude: -74.006, latitude: 40.7128 },
+                permissions: ['geolocation'],
+                extraHTTPHeaders: {
+                  'Accept-Language': 'en-US,en;q=0.9'
+                }
+              });
+
+              // Hilangkan tanda-tanda bot di sisi Javascript halaman
+              await context.addInitScript(() => {
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+              });
+
+              const page = await context.newPage();
+
               try {
-                await page.waitForSelector(inputSelector, { timeout: 8000 });
-              } catch(e) {
-                console.log('⚠️ sssinstagram lambat/berubah. Mencoba alternatif fastdl.app...');
-                await page.goto('https://fastdl.app', { waitUntil: 'domcontentloaded', timeout: 30000 });
-                await page.screenshot({ path: 'step1_homepage_alt.png', fullPage: true });
-                inputSelector = 'input#search-form-input, input[type="search"], input[type="text"]';
-                await page.waitForSelector(inputSelector, { timeout: 15000 });
+                await page.goto(src.url, { waitUntil: 'domcontentloaded', timeout: 25000 });
+                await page.screenshot({ path: `step1_homepage_${src.name.replace(/\./g, '_')}.png`, fullPage: true });
+                console.log(`📸 Screenshot awal disimpan untuk ${src.name}`);
+
+                console.log(`⏳ Mencari kolom input...`);
+                await page.waitForSelector(src.input, { timeout: 10000 });
+                await page.fill(src.input, igUrl);
+
+                console.log(`⚡ Mengirimkan URL Reel...`);
+                const submitBtn = await page.$(src.button);
+                if (submitBtn) {
+                  await submitBtn.click();
+                } else {
+                  await page.press(src.input, 'Enter');
+                }
+
+                await page.waitForTimeout(6000);
+                await page.screenshot({ path: `step2_submitted_${src.name.replace(/\./g, '_')}.png`, fullPage: true });
+
+                console.log(`⏳ Menunggu tautan unduhan dirender...`);
+                await page.waitForSelector(src.download, { timeout: 25000 });
+
+                const downloadUrl = await page.getAttribute(src.download, 'href');
+                console.log(`🔗 Link video didapatkan! Mengunduh...`);
+
+                const response = await context.request.get(downloadUrl);
+                const videoBuffer = await response.body();
+
+                fs.writeFileSync('video.mp4', videoBuffer);
+                console.log(`✅ Sukses! Video disimpan dari website: ${src.name}`);
+                downloadSuccess = true;
+                
+                await context.close();
+                break; 
+
+              } catch (error) {
+                console.error(`❌ Gagal pada ${src.name}:`, error.message);
+                try {
+                  await page.screenshot({ path: `step_error_${src.name.replace(/\./g, '_')}.png`, fullPage: true });
+                } catch (ssError) {
+                  console.error(`⚠️ Gagal menangkap screenshot error pada ${src.name}`);
+                }
+              } finally {
+                await context.close();
               }
+            }
 
-              console.log('✍️  Mengisi URL Instagram...');
-              await page.fill(inputSelector, igUrl);
+            await browser.close();
 
-              console.log('⚡ Mengirim URL...');
-              const submitBtnSelector = 'button[type="submit"], form button, #search-form-btn';
-              const submitBtn = await page.$(submitBtnSelector);
-              if (submitBtn) {
-                await submitBtn.click();
-              } else {
-                await page.press(inputSelector, 'Enter');
-              }
-              
-              await page.waitForTimeout(6000); 
-              await page.screenshot({ path: 'step2_submitted.png', fullPage: true });
-
-              const downloadBtnSelector = 'a[download], a.button__download, a.download-link, a.button-download, a[href*="dl"]';
-              await page.waitForSelector(downloadBtnSelector, { timeout: 30000 });
-
-              const downloadUrl = await page.getAttribute(downloadBtnSelector, 'href');
-              console.log(`🔗 Link video didapatkan! Mengunduh...`);
-
-              const response = await context.request.get(downloadUrl);
-              const videoBuffer = await response.body();
-
-              fs.writeFileSync('video.mp4', videoBuffer);
-              console.log('✅ Video sukses disimpan sebagai video.mp4');
-
-            } catch (error) {
-              console.error('❌ Gagal mengunduh video:', error.message);
-              try {
-                await page.screenshot({ path: 'step_error.png', fullPage: true });
-                console.log('📸 Screenshot Error disimpan: step_error.png');
-              } catch (ssError) {
-                console.error('⚠️ Gagal mengambil screenshot error:', ssError.message);
-              }
-              // PERUBAHAN KRUSIAL: Jangan gunakan process.exit(1) agar GitHub Actions tidak mematikan workflow di sini
-            } finally {
-              await browser.close();
+            if (!downloadSuccess) {
+              console.log("\n💥 Seluruh 5 website alternatif gagal mengunduh video.");
             }
           })();
           EOF
@@ -134,16 +207,14 @@ jobs:
           echo "📦 Membuat GitHub Release baru untuk aset debug..."
           gh release create test_debug_assets \
             --repo "${{ github.repository }}" \
-            --title "Debug & Test Assets" \
-            --notes "Aset hasil pengujian unduhan dan screenshot otomatis."
-            
-          # Loop upload dipastikan memeriksa file secara independen
-          for file in step1_homepage.png step1_homepage_alt.png step2_submitted.png step_error.png video.mp4; do
+            --title "Debug & Test Assets (Multi-Web Option)" \
+            --notes "Aset hasil pengujian unduhan dari beberapa website alternatif."
+
+          shopt -s nullglob
+          for file in *.png video.mp4; do
             if [ -f "$file" ]; then
               echo "📤 Mengunggah $file..."
               gh release upload test_debug_assets "$file" --repo "${{ github.repository }}"
-            else
-              echo "ℹ️ File $file tidak ditemukan (dilewati)."
             fi
           done
-          echo "✅ Selesai memeriksa semua aset debug!"
+          echo "✅ Selesai memeriksa dan mengunggah semua aset debug!"
