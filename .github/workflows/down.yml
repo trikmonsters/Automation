@@ -12,7 +12,6 @@ permissions:
   contents: write
 
 jobs:
-  # Job Awal: Membersihkan rilis aset lama agar tidak menumpuk sebelum proses paralel dimulai
   prepare-release:
     runs-on: ubuntu-latest
     steps:
@@ -35,56 +34,47 @@ jobs:
             --title "Debug & Test Assets (Parallel Mode)" \
             --notes "Aset dikumpulkan secara real-time dari beberapa web target."
 
-  # Job Utama: Dijalankan secara PARALEL memanfaatkan matriks GitHub Actions
   download-engine:
     needs: prepare-release
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false # Memastikan jika 1 web error/timeout, web lain TIDAK ikut dibatalkan
+      fail-fast: false
       matrix:
-        source: [
-          {
-            id: "indown",
-            name: "indown.io",
-            url: "https://indown.io/reels",
-            input: "input#link, input[type='url'], input[type='text']",
-            button: "button#get-btn, button[type='submit']",
+        source:
+          - id: "indown"
+            name: "indown.io"
+            url: "https://indown.io/reels"
+            input: "input#link, input[type='url'], input[type='text']"
+            button: "button#get-btn, button[type='submit']"
             download: ".btn-group-vertical a, .btn-group-vertical button, a[href*='cdninstagram.com'], a[href*='indown.io/fetch']"
-          },
-          {
-            id: "downreels",
-            name: "downreels.com",
-            url: "https://downreels.com/",
-            input: "input[placeholder*='Instagram'], input[type='text'], #url",
-            button: "button[type='submit'], form button, #download-btn",
+
+          - id: "downreels"
+            name: "downreels.com"
+            url: "https://downreels.com/"
+            input: "input[placeholder*='Instagram'], input[type='text'], #url"
+            button: "button[type='submit'], form button, #download-btn"
             download: "#downloadLinks .btn-dl-overlay-main, #downloadLinks button, .btn-dl-overlay-main, a.download-button"
-          },
-          {
-            id: "snapinsta",
-            name: "snapinsta.to",
-            url: "https://snapinsta.to/en45/instagram-reels-downloader",
-            input: "input#url, input[type='text']",
-            button: "button#btn-download, button[type='submit']",
+
+          - id: "snapinsta"
+            name: "snapinsta.to"
+            url: "https://snapinsta.to/en45/instagram-reels-downloader"
+            input: "input#url, input[type='text']"
+            button: "button#btn-download, button[type='submit']"
             download: "a.btn-premium, a.download-media, a[title='Download Video'], a.is-success"
-          },
-          {
-            id: "saveclip",
-            name: "saveclip.app",
-            url: "https://saveclip.app/en8/instagram-reels-video-download",
-            input: "input#s_input, input[type='text']",
-            button: "button.btn-red, button[type='submit']",
+
+          - id: "saveclip"
+            name: "saveclip.app"
+            url: "https://saveclip.app/en8/instagram-reels-video-download"
+            input: "input#s_input, input[type='text']"
+            button: "button.btn-red, button[type='submit']"
             download: "a.btn-premium, a.download-link, a[title='Download Video']"
-          },
-          {
-            id: "fastdl",
-            name: "fastdl.app",
-            url: "https://fastdl.app",
-            input: "input#search-form-input, input[type='text']",
-            button: "button#search-form-btn, button[type='submit']",
-            // Ditargetkan langsung menggunakan elemen class spesifik dan pola url media.fastdl.app Anda
+
+          - id: "fastdl"
+            name: "fastdl.app"
+            url: "https://fastdl.app"
+            input: "input#search-form-input, input[type='text']"
+            button: "button#search-form-btn, button[type='submit']"
             download: "a.button.button--filled.button__download, a.button__download, a[href*='media.fastdl.app/get'], .download-items-links a"
-          }
-        ]
 
     steps:
       - name: Checkout Repository
@@ -120,7 +110,6 @@ jobs:
 
             console.log(`🚀 [${srcId}] Memulai pemicu unduh: ${igUrl}`);
 
-            // Paksa flag incognito murni level sistem
             const browser = await chromium.launch({ 
               headless: true,
               args: ['--incognito', '--no-sandbox', '--disable-setuid-sandbox', '--disable-infobars']
@@ -151,11 +140,9 @@ jobs:
               const submitBtn = await page.$(srcButton);
               if (submitBtn) { await submitBtn.click(); } else { await page.press(srcInput, 'Enter'); }
 
-              // Jeda render awal sebelum tangkapan layar kedua
               await page.waitForTimeout(12000);
               await page.screenshot({ path: `step2_submitted_${srcId}.png`, fullPage: true });
 
-              // Menunggu pemuatan tautan video (Maks 60 Detik untuk Server Rendering berat)
               console.log(`⏳ Menunggu tautan unduhan dirender (Maks 60 detik)...`);
               await page.waitForSelector(srcDownload, { timeout: 60000 });
 
@@ -163,7 +150,6 @@ jobs:
               let downloadUrl = "";
               const tagName = await page.evaluate(el => el.tagName.toLowerCase(), downloadElement);
 
-              // Logika Intersepsi jika element berupa tombol/bukan tautan langsung
               if (tagName === 'button' || tagName === 'div') {
                 downloadUrl = await page.evaluate(el => {
                   const anchor = el.closest('a') || el.querySelector('a');
