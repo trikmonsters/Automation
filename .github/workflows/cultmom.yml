@@ -252,18 +252,18 @@ jobs:
                   sys.exit(1)
               time.sleep(2)
 
-          # ── 3. Generate Content dengan Model Sesuai Request & 5x Retry ──
           prompt = """
-          Tonton cuplikan video media sosial ini dengan seksama.
-          Pahami jalan ceritanya, ekspresi, teks, dan visualnya.
+          Watch this social media video clip carefully. 
+          Analyze the storyline, expressions, existing text overlays, and visual boundaries.
 
-          Anda WAJIB mengembalikan respons dalam Bahasa Inggris dengan format JSON MURNI seperti di bawah,
-          tanpa teks, kalimat, atau markdown apapun di luar JSON:
+          You MUST return the response in RAW PURE JSON format matching the schema below. 
+          Do NOT wrap it in any markdown code blocks, do not include backticks (```json), and do not add any conversational text before or after the JSON structure.
+
           {
-            "y_min_persen": [Angka persentase 0-100 posisi horizontal atas di mana teks meme luar berakhir dan bingkai video film asli dimulai],
-            "y_max_persen": [Angka persentase 0-100 posisi horizontal bawah di mana bingkai video berakhir sebelum tombol navigasi HP],
-            "caption_sosmed": "[Buat caption promosi media sosial yang menarik, bikin penasaran, dan relevan dengan isi/ending video ini]",
-            "text_overlay_saran": "[Buat 1 kalimat teks pendek/hook-meme dramatis maksimal 8 kata yang sangat cocok ditempel di tengah video]"
+            "y_min_persen": [A single numeric percentage from 0 to 100, indicating the vertical position where the top external meme/overlay text ends and the actual source film/video frame boundary begins],
+            "y_max_persen": [A single numeric percentage from 0 to 100, indicating the vertical position where the actual source film/video frame ends before any bottom black bars or smartphone navigation overlays],
+            "caption_sosmed": "[Create an engaging, curiosity-driven, and highly relevant social media promotional caption based on the context/ending of this video]",
+            "text_overlay_saran": "[Create a short, dramatic 1-sentence hook or meme caption of maximum 8 words that is perfect to overlay in the center of this video]"
           }
           """
 
@@ -279,6 +279,9 @@ jobs:
               "generationConfig": {
                   "maxOutputTokens": 65536,
                   "responseMimeType": "application/json"
+              },
+              "thinkingConfig": {
+                  "thinkingLevel": "high"
               }
           }
 
