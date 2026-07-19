@@ -281,7 +281,7 @@ jobs:
                   "responseMimeType": "application/json"
               },
               "thinkingConfig": {
-                  "thinkingLevel": "high"
+                  "thinkingLevel": "HIGH"
               }
           }
 
