@@ -278,11 +278,11 @@ jobs:
               ],
               "generationConfig": {
                   "maxOutputTokens": 65536,
-                  "responseMimeType": "application/json"
+                  "responseMimeType": "application/json",
+                  "thinkingConfig": {
+                    "thinkingLevel": "HIGH"
+                }
               },
-              "thinkingConfig": {
-                  "thinkingLevel": "HIGH"
-              }
           }
 
           models = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
