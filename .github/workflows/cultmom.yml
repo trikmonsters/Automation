@@ -82,11 +82,6 @@ jobs:
               extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' }
             });
 
-            await context.addInitScript(() => {
-              Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-              Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            });
-
             const page = await context.newPage();
             let downloadSuccess = false;
 
@@ -168,6 +163,7 @@ jobs:
           import time
           import subprocess
           import requests
+          import textwrap
 
           # ── Setup API (Native REST API via requests) ─────────────────
           api_key = os.environ.get("GEMINI_API_KEY", "").strip()
@@ -296,7 +292,7 @@ jobs:
                   break
                   
               print(f"\n🔄 Mencoba menggunakan model: {model}")
-              generate_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+              generate_url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model}:generateContent?key={api_key}"
 
               for attempt in range(max_retries):
                   print(f"📡 Mengirim permintaan ke {model} (Percobaan {attempt + 1}/{max_retries})...")
@@ -371,15 +367,9 @@ jobs:
               f.write(f"FULL_H={full_h}\n")
               f.write(f"FULL_W={full_w}\n")
 
+          # FIX: Menggunakan textwrap.wrap agar pembungkusan teks rapi tanpa bug pengulangan kata
           def wrap_text(text, max_chars=35):
-              words, lines, cur = text.split(), [], ""
-              for w in words:
-                  if len(cur) + len(w) > max_chars:
-                      if cur: lines.append(cur.strip())
-                      current = w + " "
-                  else:
-                      cur += w + " "
-              if cur.strip(): lines.append(cur.strip())
+              lines = textwrap.wrap(text, width=max_chars)
               return "\n".join(lines)
 
           with open("text_overlay.txt", "w", encoding="utf-8") as f:
@@ -390,7 +380,7 @@ jobs:
 
           # ── 4. Hapus File dari Cloud Cloud via REST API ──────────────
           try:
-              delete_url = f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key}"
+              delete_url = f"[https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/){file_name}?key={api_key}"
               requests.delete(delete_url)
               print("🗑️  File Gemini di cloud telah dibersihkan.")
           except Exception:
@@ -579,7 +569,7 @@ jobs:
 
               payload = json.dumps({"query": mutation}).encode("utf-8")
               req = urllib.request.Request(
-                  "https://api.buffer.com/graphql",
+                  "[https://api.buffer.com/graphql](https://api.buffer.com/graphql)",
                   data=payload,
                   headers={
                       "Content-Type": "application/json",
