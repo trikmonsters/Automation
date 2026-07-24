@@ -20,9 +20,58 @@ permissions:
   contents: write
 
 jobs:
-  process-video:
+  download-video:
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
+      - name: Install FFmpeg Binary
+        run: |
+          mkdir -p ~/.local/bin
+          curl -L https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ --strip-components=1 -C ~/.local/bin
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install yt-dlp Binary
+        run: |
+          mkdir -p ~/.local/bin
+          curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ~/.local/bin/yt-dlp
+          chmod +x ~/.local/bin/yt-dlp
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Create Downloads Cookie File
+        env:
+          COOKIES_TEXT: ${{ secrets.COOKIE }}
+        run: |
+          mkdir -p downloads
+          echo "$COOKIES_TEXT" > ./cookies.txt
+
+      - name: Download Video via yt-dlp
+        run: |
+          set -e
+          yt-dlp --cookies ./cookies.txt \
+                 --remote-components ejs:github \
+                 -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
+                 --merge-output-format mp4 \
+                 -o "video_raw.mp4" \
+                 "${{ github.event.inputs.video_url }}"
+
+      - name: Upload Raw Video Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-video
+          path: video_raw.mp4
+          retention-days: 1
+          
+  process-video:
+    name: AI Analysis & Processing
+    needs: download-video
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -32,125 +81,18 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-
-      - name: Install Dependencies
+      - name: Install Processing Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg fonts-liberation
           pip install opencv-python-headless requests --quiet
 
-      - name: Install Playwright Dependencies
-        run: |
-          npm init -y
-          npm install playwright playwright-extra puppeteer-extra-plugin-stealth
-          npx playwright install chromium --with-deps
+      - name: Download Raw Video Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: raw-video
 
-      - name: Download Video via Playwright (Downreels Only)
-        run: |
-          cat << 'EOF' > download_ig.js
-          const { chromium } = require('playwright-extra');
-          const stealth = require('puppeteer-extra-plugin-stealth')();
-          const fs = require('fs');
-
-          chromium.use(stealth);
-
-          (async () => {
-            const igUrl = process.argv[2] || "";
-            
-            // Konfigurasi khusus untuk downreels.com
-            const srcId = "downreels";
-            const srcUrl = "https://downreels.com/";
-            const srcInput = "input[placeholder*='Instagram'], input[type='text'], #url";
-            const srcButton = "button[type='submit'], form button, #download-btn";
-            const srcDownload = "#downloadLinks .btn-dl-overlay-main, #downloadLinks button, .btn-dl-overlay-main, a.download-button";
-
-            console.log(`🚀 [${srcId}] Memulai pemicu unduh: ${igUrl}`);
-
-            const browser = await chromium.launch({ 
-              headless: true,
-              args: ['--incognito', '--no-sandbox', '--disable-setuid-sandbox', '--disable-infobars']
-            });
-
-            const context = await browser.newContext({
-              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-              viewport: { width: 1366, height: 768 },
-              locale: 'en-US',
-              extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' }
-            });
-
-            const page = await context.newPage();
-            let downloadSuccess = false;
-
-            try {
-              await page.goto(srcUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
-              await page.screenshot({ path: `step1_homepage_${srcId}.png`, fullPage: true });
-
-              await page.waitForSelector(srcInput, { timeout: 15000 });
-              await page.fill(srcInput, igUrl);
-
-              const submitBtn = await page.$(srcButton);
-              if (submitBtn) { await submitBtn.click(); } else { await page.press(srcInput, 'Enter'); }
-
-              await page.waitForTimeout(12000);
-              await page.screenshot({ path: `step2_submitted_${srcId}.png`, fullPage: true });
-
-              console.log(`⏳ Menunggu tautan unduhan dirender (Maks 60 detik)...`);
-              await page.waitForSelector(srcDownload, { timeout: 60000 });
-
-              const downloadElement = await page.$(srcDownload);
-              let downloadUrl = "";
-              const tagName = await page.evaluate(el => el.tagName.toLowerCase(), downloadElement);
-
-              if (tagName === 'button' || tagName === 'div') {
-                downloadUrl = await page.evaluate(el => {
-                  const anchor = el.closest('a') || el.querySelector('a');
-                  return anchor ? anchor.href : el.getAttribute('data-url') || el.getAttribute('data-href');
-                }, downloadElement);
-
-                if (!downloadUrl) {
-                  console.log(`🔄 Target berupa tombol tanpa href, merekam stream via klik langsung...`);
-                  const [downloadEvent] = await Promise.all([
-                    page.waitForEvent('download', { timeout: 45000 }),
-                    downloadElement.click()
-                  ]);
-                  await downloadEvent.saveAs(`video.mp4`);
-                  downloadSuccess = true;
-                }
-              } else {
-                downloadUrl = await page.getAttribute(srcDownload, 'href');
-              }
-
-              if (downloadUrl && !downloadSuccess) {
-                console.log(`🔗 Link video didapatkan. Mendownload stream data...`);
-                const response = await context.request.get(downloadUrl, { timeout: 45000 });
-                const videoBuffer = await response.body();
-                fs.writeFileSync(`video.mp4`, videoBuffer);
-                downloadSuccess = true;
-              }
-
-              if (downloadSuccess) {
-                console.log(`✅ Selesai! File video.mp4 sukses ditulis.`);
-              } else {
-                throw new Error("Gagal mengekstrak URL unduhan.");
-              }
-
-            } catch (error) {
-              console.error(`❌ Gangguan pada ${srcId}:`, error.message);
-              try { await page.screenshot({ path: `step_error_${srcId}.png`, fullPage: true }); } catch (e) {}
-              process.exit(1);
-            } finally {
-              await context.close();
-              await browser.close();
-            }
-          })();
-          EOF
-          node download_ig.js "${{ github.event.inputs.video_url }}"
-
-      - name: Extract Sample, Analyze Video & Generate Metadata via Gemini API
+      - name: Analyze & Extract Metadata via Gemini API
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           INPUT_CAPTION: ${{ github.event.inputs.caption }}
@@ -165,17 +107,15 @@ jobs:
           import requests
           import textwrap
 
-          # ── Setup API (Native REST API via requests) ─────────────────
           api_key = os.environ.get("GEMINI_API_KEY", "").strip()
           if not api_key:
               print("❌ GEMINI_API_KEY kosong! Cek secret di repo settings.")
               sys.exit(1)
 
           input_caption = os.environ.get("INPUT_CAPTION", "").strip()
-          video_path    = "video.mp4"
+          video_path    = "video_raw.mp4"
           sample_path   = "sample_15s_end.mp4"
 
-          # ── Baca metadata video ASLI ─────────────────────────────────
           cap = cv2.VideoCapture(video_path)
           full_h       = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
           full_w       = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -186,27 +126,21 @@ jobs:
           print(f"📐 Resolusi Video Asli : {full_w}x{full_h}")
           print(f"⏱️  Durasi Video Asli  : {total_dur:.2f} detik")
 
-          # ── Potong sample 15 detik AKHIR untuk analisis AI ───────────
           if total_dur <= 15.0:
               start_time   = 0
               sample_dur   = total_dur
-              print(f"ℹ️  Video pendek ({total_dur:.2f}s) — sample dari detik 0")
           else:
               start_time   = total_dur - 15
               sample_dur   = 15
-              print(f"🎬 Memotong sample dari detik {start_time:.2f} s/d {total_dur:.2f}")
 
           cmd_sample = (
               f'ffmpeg -ss {start_time} -i "{video_path}" -t {sample_dur} '
               f'-c:v libx264 -c:a aac -strict -2 "{sample_path}" -y -loglevel quiet'
           )
           subprocess.run(cmd_sample, shell=True, check=True)
-          print("✅ Sample video siap dikirim ke Gemini.")
 
-          # ── 1. Upload File ke File API (Resumable Upload) ────────────
-          print("🚀 Mengunggah sample ke Google Gemini File API...")
+          # Upload File ke Gemini
           file_size = os.path.getsize(sample_path)
-          
           upload_url = f"https://generativelanguage.googleapis.com/upload/v1beta/files?key={api_key}"
           headers = {
               "X-Goog-Upload-Protocol": "resumable",
@@ -215,9 +149,7 @@ jobs:
               "X-Goog-Upload-Header-Content-Type": "video/mp4",
               "Content-Type": "application/json"
           }
-          metadata = {"file": {"displayName": "sample_video"}}
-          
-          res_init = requests.post(upload_url, headers=headers, json=metadata)
+          res_init = requests.post(upload_url, headers=headers, json={"file": {"displayName": "sample_video"}})
           upload_session_url = res_init.headers.get("X-Goog-Upload-URL")
 
           with open(sample_path, "rb") as f:
@@ -231,20 +163,14 @@ jobs:
           file_info = res_upload.json()
           file_uri = file_info["file"]["uri"]
           file_name = file_info["file"]["name"]
-          print(f"✅ File berhasil diunggah. URI: {file_uri}")
 
-          # ── 2. Polling Status Proses Video ───────────────────────────
-          print("⏳ Menunggu Gemini memproses video...")
           get_file_url = f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key}"
-          
           while True:
               res_check = requests.get(get_file_url).json()
               state = res_check.get("state", "PROCESSING")
               if state == "ACTIVE":
-                  print("🤖 AI siap menganalisis!")
                   break
               elif state == "FAILED":
-                  print("❌ Gemini gagal memproses video.")
                   sys.exit(1)
               time.sleep(2)
 
@@ -252,152 +178,81 @@ jobs:
           Watch this social media video clip carefully. 
           Analyze the storyline, expressions, existing text overlays, and visual boundaries.
 
-          You MUST return the response in RAW PURE JSON format matching the schema below. 
-          Do NOT wrap it in any markdown code blocks, do not include backticks (```json), and do not add any conversational text before or after the JSON structure.
-
+          You MUST return the response in RAW PURE JSON format matching the schema below:
           {
-            "y_min_persen": [A single numeric percentage from 0 to 100, indicating the vertical position where the top external meme/overlay text ends and the actual source film/video frame boundary begins],
-            "y_max_persen": [A single numeric percentage from 0 to 100, indicating the vertical position where the actual source film/video frame ends before any bottom black bars or smartphone navigation overlays],
-            "caption_sosmed": "[Create an engaging, curiosity-driven, and highly relevant social media promotional caption based on the context/ending of this video]",
-            "text_overlay_saran": "[Create a short, dramatic 1-sentence hook or meme caption of maximum 8 words that is perfect to overlay in the center of this video]"
+            "y_min_persen": [A single numeric percentage from 0 to 100],
+            "y_max_persen": [A single numeric percentage from 0 to 100],
+            "caption_sosmed": "[Create social media caption]",
+            "text_overlay_saran": "[Short hook max 8 words]"
           }
           """
 
           payload = {
-              "contents": [
-                  {
-                      "parts": [
-                          {"fileData": {"fileUri": file_uri, "mimeType": "video/mp4"}},
-                          {"text": prompt}
-                      ]
-                  }
-              ],
+              "contents": [{"parts": [{"fileData": {"fileUri": file_uri, "mimeType": "video/mp4"}}, {"text": prompt}]}],
               "generationConfig": {
                   "maxOutputTokens": 65536,
                   "responseMimeType": "application/json",
-                  "thinkingConfig": {
-                    "thinkingLevel": "HIGH"
-                }
+                  "thinkingConfig": {"thinkingLevel": "HIGH"}
               },
           }
 
           models = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
-          max_retries = 5
-          retry_delay = 20
           raw_text = "{}"
           success = False
 
           for model in models:
-              if success:
-                  break
-                  
-              print(f"\n🔄 Mencoba menggunakan model: {model}")
-              generate_url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model}:generateContent?key={api_key}"
-
-              for attempt in range(max_retries):
-                  print(f"📡 Mengirim permintaan ke {model} (Percobaan {attempt + 1}/{max_retries})...")
+              if success: break
+              generate_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+              for attempt in range(5):
                   try:
                       res_generate = requests.post(generate_url, json=payload, timeout=90)
                       response_json = res_generate.json()
-                      
-                      if res_generate.status_code == 200:
-                          if "candidates" in response_json and len(response_json["candidates"]) > 0:
-                              raw_text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
-                              print(f"🎉 Sukses mendapatkan respons dari {model}!")
-                              success = True
-                              break
-                          else:
-                              print(f"⚠️ Respons status 200 tapi format kosong: {response_json}")
-                      
+                      if res_generate.status_code == 200 and "candidates" in response_json:
+                          raw_text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+                          success = True
+                          break
                       elif res_generate.status_code in [429, 503, 504]:
-                          print(f"⚠️ Server sibuk ({res_generate.status_code}). Mencoba ulang dalam {retry_delay} detik...")
-                          time.sleep(retry_delay)
+                          time.sleep(20)
                       else:
-                          print(f"❌ Kesalahan API ({res_generate.status_code}): {response_json}")
-                          break  # Jika error permanen, langsung ganti ke model cadangan
-                          
-                  except requests.exceptions.RequestException as req_err:
-                      print(f"⚠️ Gangguan koneksi jaringan: {req_err}. Mencoba ulang...")
-                      time.sleep(retry_delay)
+                          break
+                  except requests.exceptions.RequestException:
+                      time.sleep(20)
 
-          print(f"\n📨 Raw JSON dari Gemini:\n{raw_text}\n")
-
-          # ── Parse JSON & hitung koordinat PIKSEL dari video ASLI ─────
           try:
               data        = json.loads(raw_text)
               y_min_pct   = float(data['y_min_persen'])
               y_max_pct   = float(data['y_max_persen'])
-
               crop_y      = int(y_min_pct * full_h / 100)
               y_max_px    = int(y_max_pct * full_h / 100)
               crop_h      = y_max_px - crop_y
-              crop_x      = 0
-              crop_w      = full_w
-
-              if crop_h <= 0:
-                  raise ValueError(f"crop_h tidak valid: {crop_h}")
-
+              crop_x, crop_w = 0, full_w
               text_overlay   = data.get('text_overlay_saran', '').strip()
               buffer_caption = input_caption if input_caption else data.get('caption_sosmed', '#reels #viral #fyp')
-
-              print(f"✅ Geometri Crop (dari video asli {full_w}x{full_h}):")
-              print(f"   Y atas   : {y_min_pct}% → {crop_y}px")
-              print(f"   Y bawah  : {y_max_pct}% → {y_max_px}px")
-              print(f"   Crop H   : {crop_h}px | Crop W : {crop_w}px")
-              print(f"   Hook     : {text_overlay}")
-
-          except Exception as e:
-              print(f"⚠️ Gagal parse JSON AI ({e}) — pakai fallback default")
+          except Exception:
               crop_x, crop_y  = 0, int(full_h * 0.34)
-              crop_w          = full_w
-              crop_h          = int(full_h * 0.32)
+              crop_w, crop_h  = full_w, int(full_h * 0.32)
               text_overlay    = "Check this out! 😱🔥"
               buffer_caption  = input_caption if input_caption else "#reels #viral #fyp"
 
-          # ── Simpan semua parameter ke file teks ──────────────────────
           with open("crop_params.txt", "w") as f:
-              f.write(f"CROP_W={crop_w}\n")
-              f.write(f"CROP_H={crop_h}\n")
-              f.write(f"CROP_X={crop_x}\n")
-              f.write(f"CROP_Y={crop_y}\n")
+              f.write(f"CROP_W={crop_w}\nCROP_H={crop_h}\nCROP_X={crop_x}\nCROP_Y={crop_y}\nFULL_H={full_h}\nFULL_W={full_w}\n")
 
-          with open("video_meta.txt", "w") as f:
-              f.write(f"TOTAL_DURATION={total_dur}\n")
-              f.write(f"START_TIME={start_time}\n")
-              f.write(f"FULL_H={full_h}\n")
-              f.write(f"FULL_W={full_w}\n")
-
-          # FIX: Menggunakan textwrap.wrap agar pembungkusan teks rapi tanpa bug pengulangan kata
-          def wrap_text(text, max_chars=35):
-              lines = textwrap.wrap(text, width=max_chars)
-              return "\n".join(lines)
-
+          lines = textwrap.wrap(text_overlay, width=35)
           with open("text_overlay.txt", "w", encoding="utf-8") as f:
-              f.write(wrap_text(text_overlay))
+              f.write("\n".join(lines))
 
           with open("buffer_caption.txt", "w", encoding="utf-8") as f:
               f.write(buffer_caption)
 
-          # ── 4. Hapus File dari Cloud Cloud via REST API ──────────────
           try:
-              delete_url = f"[https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/){file_name}?key={api_key}"
-              requests.delete(delete_url)
-              print("🗑️  File Gemini di cloud telah dibersihkan.")
-          except Exception:
-              pass
-
-          print("\n✅ Semua parameter berhasil disimpan.")
+              requests.delete(f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key}")
+          except Exception: pass
           EOF
           python detect_and_caption.py
 
-      - name: Process Video with FFmpeg (Crop dari Video Asli)
+      - name: Process Video with FFmpeg
         run: |
           source crop_params.txt
-          source video_meta.txt
-
-          echo "📐 Paramater Crop:"
-          echo "   Video asli   : ${FULL_W}x${FULL_H}px"
-          echo "   Crop region  : X=${CROP_X}, Y=${CROP_Y}, W=${CROP_W}, H=${CROP_H}"
 
           if [ "$CROP_Y" -lt 0 ]; then CROP_Y=0; fi
           if [ "$CROP_X" -lt 0 ]; then CROP_X=0; fi
@@ -406,12 +261,7 @@ jobs:
           if [ "$CROP_H" -gt "$MAX_H" ]; then CROP_H=$MAX_H; fi
           if [ "$CROP_W" -gt "$MAX_W" ]; then CROP_W=$MAX_W; fi
 
-          echo "✅ Crop tervalidasi: W=${CROP_W}, H=${CROP_H}, X=${CROP_X}, Y=${CROP_Y}"
-
           FONT_PATH="/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
-          if [ ! -f "$FONT_PATH" ]; then
-            sudo apt-get install -y fonts-liberation -qq
-          fi
 
           TEXT_EMPTY=true
           if [ -s text_overlay.txt ]; then
@@ -420,28 +270,21 @@ jobs:
           fi
 
           if [ "$TEXT_EMPTY" = true ]; then
-            echo "ℹ️  Tidak ada teks overlay — crop & scale standar dari video asli..."
-
-            ffmpeg -i "video.mp4" \
+            ffmpeg -i "video_raw.mp4" \
               -vf "crop=${CROP_W}:${CROP_H}:${CROP_X}:${CROP_Y},\
                    hflip,\
                    scale=1080:1920:force_original_aspect_ratio=decrease,\
                    pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black" \
               -c:v libx264 -crf 20 -c:a aac -b:a 128k \
-              "output_final.mp4" -y -loglevel quiet
-
+              "processed_video.mp4" -y -loglevel quiet
           else
-            echo "🎨 Menambahkan teks overlay ke video asli..."
-
             SCALED_H=$(( CROP_H * 1080 / CROP_W ))
             TOP_PAD=$(( (1920 - SCALED_H) / 2 ))
             if [ "$TOP_PAD" -lt 0 ]; then TOP_PAD=0; fi
             TEXT_Y=$(( TOP_PAD / 2 ))
             if [ "$TEXT_Y" -lt 60 ]; then TEXT_Y=60; fi
 
-            echo "   Scaled H : ${SCALED_H}px | Top Pad : ${TOP_PAD}px | Text Y : ${TEXT_Y}px"
-
-            ffmpeg -i "video.mp4" \
+            ffmpeg -i "video_raw.mp4" \
               -vf "crop=${CROP_W}:${CROP_H}:${CROP_X}:${CROP_Y},\
                    hflip,\
                    scale=1080:1920:force_original_aspect_ratio=decrease,\
@@ -453,14 +296,33 @@ jobs:
                    fontsize=48:fontcolor=white:\
                    borderw=2:bordercolor=black" \
               -c:v libx264 -crf 20 -c:a aac -b:a 128k \
-              "output_final.mp4" -y -loglevel quiet
+              "processed_video.mp4" -y -loglevel quiet
           fi
 
-          mv output_final.mp4 video.mp4
-          echo "✅ Video selesai diproses dan siap di-upload!"
+      - name: Upload Processed Video Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: processed-video
+          path: |
+            processed_video.mp4
+            buffer_caption.txt
+          retention-days: 1
 
-      - name: Delete old release
-        if: ${{ github.event.inputs.post_to_buffer == 'true' }}
+  # =========================================================================
+  # JOB 3: Publish Release & Post to Buffer
+  # =========================================================================
+  publish-buffer:
+    name: Publish to Release & Buffer API
+    needs: process-video
+    if: ${{ github.event.inputs.post_to_buffer == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Processed Video Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: processed-video
+
+      - name: Clean & Re-create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -468,33 +330,23 @@ jobs:
           RELEASE_ID=$(gh api repos/${{ github.repository }}/releases \
             --jq '.[] | select(.tag_name == "buffer_video") | .id' 2>/dev/null || echo "")
           if [ -n "$RELEASE_ID" ]; then
-            echo "Deleting release ID: $RELEASE_ID"
             gh api -X DELETE repos/${{ github.repository }}/releases/$RELEASE_ID || true
             sleep 3
           fi
           gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/buffer_video || true
           sleep 3
-          echo "✅ Cleanup done"
 
-      - name: Upload video to GitHub Release
-        if: ${{ github.event.inputs.post_to_buffer == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "📦 Creating GitHub release..."
+          echo "📦 Uploading processed_video.mp4 to GitHub Release..."
           for i in 1 2 3; do
             gh release create buffer_video \
               --repo "${{ github.repository }}" \
               --title "Buffer Video (Temporary Hosting)" \
               --notes "Temporary hosting for Buffer API. Automatically replaced on next run." \
-              video.mp4 && break
-            echo "⚠️ Attempt $i gagal, retry dalam 5 detik..."
+              processed_video.mp4#video.mp4 && break
             sleep 5
           done
-          echo "✅ Release created"
 
-      - name: Get video URL from release
-        if: ${{ github.event.inputs.post_to_buffer == 'true' }}
+      - name: Get Video URL
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -506,10 +358,8 @@ jobs:
             exit 1
           fi
           echo "VIDEO_URL=${VIDEO_URL}" >> $GITHUB_ENV
-          echo "✅ Video URL: ${VIDEO_URL}"
 
-      - name: Upload via Buffer API
-        if: ${{ github.event.inputs.post_to_buffer == 'true' }}
+      - name: Trigger Buffer API
         env:
           BUFFER_API_KEY: ${{ secrets.BUFFER_V2 }}
           VIDEO_URL: ${{ env.VIDEO_URL }}
@@ -547,10 +397,7 @@ jobs:
               platform   = ch["platform"]
               print(f"\n🚀 Posting ke: {channel_id} ({platform})")
 
-              if platform == "instagram":
-                  metadata_str = ", metadata: { instagram: { type: reel, shouldShareToFeed: true } }"
-              else:
-                  metadata_str = ""
+              metadata_str = ", metadata: { instagram: { type: reel, shouldShareToFeed: true } }" if platform == "instagram" else ""
 
               mutation = (
                   "mutation { createPost(input: {"
@@ -569,7 +416,7 @@ jobs:
 
               payload = json.dumps({"query": mutation}).encode("utf-8")
               req = urllib.request.Request(
-                  "[https://api.buffer.com/graphql](https://api.buffer.com/graphql)",
+                  "https://api.buffer.com/graphql",
                   data=payload,
                   headers={
                       "Content-Type": "application/json",
