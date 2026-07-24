@@ -67,7 +67,7 @@ jobs:
           name: raw-video
           path: video_raw.mp4
           retention-days: 1
-          
+
   process-video:
     name: AI Analysis & Processing
     needs: download-video
@@ -308,9 +308,6 @@ jobs:
             buffer_caption.txt
           retention-days: 1
 
-  # =========================================================================
-  # JOB 3: Publish Release & Post to Buffer
-  # =========================================================================
   publish-buffer:
     name: Publish to Release & Buffer API
     needs: process-video
