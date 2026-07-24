@@ -275,7 +275,7 @@ jobs:
                    hflip,\
                    scale=1080:1920:force_original_aspect_ratio=decrease,\
                    pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black" \
-              -c:v libx264 -crf 20 -c:a aac -b:a 128k \
+              -c:v libx264 -crf 18 -r 30 -c:a aac -b:a 128k \
               "processed_video.mp4" -y -loglevel quiet
           else
             SCALED_H=$(( CROP_H * 1080 / CROP_W ))
@@ -295,7 +295,7 @@ jobs:
                    x=(w-text_w)/2:y=${TEXT_Y}:\
                    fontsize=48:fontcolor=white:\
                    borderw=2:bordercolor=black" \
-              -c:v libx264 -crf 20 -c:a aac -b:a 128k \
+              -c:v libx264 -crf 18 -r 30 -c:a aac -b:a 128k \
               "processed_video.mp4" -y -loglevel quiet
           fi
 
