@@ -37,12 +37,10 @@ jobs:
         with:
           deno-version: v2.x
 
-      - name: Install yt-dlp Binary
+      - name: Install yt-dlp
         run: |
-          mkdir -p ~/.local/bin
-          curl -L https://github.com/yt-dlp/releases/latest/download/yt-dlp -o ~/.local/bin/yt-dlp
-          chmod +x ~/.local/bin/yt-dlp
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          python3 -m pip install --upgrade pip
+          pip install yt-dlp
 
       - name: Create Downloads Cookie File
         env:
@@ -197,7 +195,6 @@ jobs:
               },
           }
 
-          # Daftar model Gemini sesuai urutan prioritas
           models = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
           raw_text = "{}"
           success = False
@@ -216,7 +213,6 @@ jobs:
                           candidate = response_json["candidates"][0]
                           parts = candidate.get("content", {}).get("parts", [])
                           
-                          # Ambil part paling akhir yang berisi teks/JSON (Mencegah terpengaruh thinking process)
                           extracted_text = ""
                           for part in reversed(parts):
                               if "text" in part and part["text"].strip():
@@ -239,7 +235,6 @@ jobs:
                       time.sleep(20)
 
           try:
-              # Bersihkan sintaks Markdown jika Gemini menyertakan formatting ```json
               clean_text = raw_text.replace("```json", "").replace("```", "").strip()
               data        = json.loads(clean_text)
               
@@ -276,7 +271,7 @@ jobs:
               f.write(buffer_caption)
 
           try:
-              requests.delete(f"[https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/){file_name}?key={api_key}")
+              requests.delete(f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key}")
           except Exception: pass
           EOF
           python detect_and_caption.py
@@ -381,7 +376,7 @@ jobs:
           sleep 5
           VIDEO_URL=$(gh api repos/${{ github.repository }}/releases/tags/buffer_video \
             --jq '.assets[0].browser_download_url')
-          if [ -z "$VIDEO_URL" ] \vert{}\vert{} [ "$VIDEO_URL" = "null" ]; then
+          if [ -z "$VIDEO_URL" ] || [ "$VIDEO_URL" = "null" ]; then
             echo "❌ Failed to get video URL from release"
             exit 1
           fi
@@ -439,12 +434,12 @@ jobs:
                   "}) {"
                   "  ... on PostActionSuccess { post { id dueAt } }"
                   "  ... on MutationError { message }"
-                   issue "} }"
+                  "} }"
               )
 
               payload = json.dumps({"query": mutation}).encode("utf-8")
               req = urllib.request.Request(
-                  "[https://api.buffer.com/graphql](https://api.buffer.com/graphql)",
+                  "https://api.buffer.com/graphql",
                   data=payload,
                   headers={
                       "Content-Type": "application/json",
