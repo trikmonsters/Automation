@@ -40,7 +40,7 @@ jobs:
       - name: Install yt-dlp Binary
         run: |
           mkdir -p ~/.local/bin
-          curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ~/.local/bin/yt-dlp
+          curl -L https://github.com/yt-dlp/releases/latest/download/yt-dlp -o ~/.local/bin/yt-dlp
           chmod +x ~/.local/bin/yt-dlp
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
@@ -139,7 +139,7 @@ jobs:
           )
           subprocess.run(cmd_sample, shell=True, check=True)
 
-          # Upload File ke Gemini
+          # Upload File ke Gemini File API
           file_size = os.path.getsize(sample_path)
           upload_url = f"https://generativelanguage.googleapis.com/upload/v1beta/files?key={api_key}"
           headers = {
@@ -171,6 +171,7 @@ jobs:
               if state == "ACTIVE":
                   break
               elif state == "FAILED":
+                  print("❌ Process Video di Gemini FAILED!")
                   sys.exit(1)
               time.sleep(2)
 
@@ -180,10 +181,10 @@ jobs:
 
           You MUST return the response in RAW PURE JSON format matching the schema below:
           {
-            "y_min_persen": [A single numeric percentage from 0 to 100],
-            "y_max_persen": [A single numeric percentage from 0 to 100],
-            "caption_sosmed": "[Create social media caption]",
-            "text_overlay_saran": "[Short hook max 8 words]"
+            "y_min_persen": 0,
+            "y_max_persen": 100,
+            "caption_sosmed": "Text caption for social media",
+            "text_overlay_saran": "Short hook text max 8 words"
           }
           """
 
@@ -196,51 +197,52 @@ jobs:
               },
           }
 
-          models = ["gemini-3.6-flash" "gemini-3.5-flash", "gemini-3.1-flash-lite"]
+          # Daftar model Gemini sesuai urutan prioritas
+          models = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
           raw_text = "{}"
           success = False
 
           for model in models:
-          if success: 
-              break
-          print(f"🤖 Memanggil API dengan model: {model}...")
-          generate_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-          
-          for attempt in range(5):
-              try:
-                  res_generate = requests.post(generate_url, json=payload, timeout=90)
-                  response_json = res_generate.json()
-                  
-                  if res_generate.status_code == 200 and "candidates" in response_json:
-                      parts = response_json["candidates"][0]["content"]["parts"]
+              if success: break
+              generate_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+              print(f"🔄 Memproses AI dengan model: {model}...")
+              
+              for attempt in range(5):
+                  try:
+                      res_generate = requests.post(generate_url, json=payload, timeout=90)
+                      response_json = res_generate.json()
                       
-                      # Ekstrak part teks yang berisi JSON (mengabaikan thought trace jika terpisah)
-                      for part in reversed(parts):
-                          text_candidate = part.get("text", "").strip()
-                          if text_candidate and not part.get("thought", False):
-                              raw_text = text_candidate
+                      if res_generate.status_code == 200 and "candidates" in response_json:
+                          candidate = response_json["candidates"][0]
+                          parts = candidate.get("content", {}).get("parts", [])
+                          
+                          # Ambil part paling akhir yang berisi teks/JSON (Mencegah terpengaruh thinking process)
+                          extracted_text = ""
+                          for part in reversed(parts):
+                              if "text" in part and part["text"].strip():
+                                  extracted_text = part["text"].strip()
+                                  break
+
+                          if extracted_text:
+                              raw_text = extracted_text
+                              success = True
+                              print(f"✅ Berhasil memproses dengan model: {model}")
                               break
-                      
-                      if not raw_text or raw_text == "{}":
-                          # Fallback ambil part terakhir jika struktur tidak menandai 'thought'
-                          raw_text = parts[-1].get("text", "").strip()
-      
-                      print(f"✅ Berhasil mendapat respons dari {model}!")
-                      success = True
-                      break
-                  else:
-                      print(f"⚠️ API Error Status {res_generate.status_code} ({model}): {res_generate.text}")
-                      if res_generate.status_code in [429, 503, 504]:
+                      elif res_generate.status_code in [429, 503, 504]:
+                          print(f"⚠️ Limit/Server Busy ({res_generate.status_code}) pada {model}, mencoba ulang...")
                           time.sleep(20)
                       else:
+                          print(f"❌ Error HTTP {res_generate.status_code} [{model}]: {res_generate.text}")
                           break
-              except requests.exceptions.RequestException as err:
-                  print(f"⚠️ Network error ({model}): {err}")
-                  time.sleep(20)
-      
+                  except requests.exceptions.RequestException as err:
+                      print(f"⚠️ Network error pada {model}: {err}")
+                      time.sleep(20)
+
           try:
+              # Bersihkan sintaks Markdown jika Gemini menyertakan formatting ```json
               clean_text = raw_text.replace("```json", "").replace("```", "").strip()
               data        = json.loads(clean_text)
+              
               y_min_pct   = float(data['y_min_persen'])
               y_max_pct   = float(data['y_max_persen'])
               crop_y      = int(y_min_pct * full_h / 100)
@@ -249,7 +251,15 @@ jobs:
               crop_x, crop_w = 0, full_w
               text_overlay   = data.get('text_overlay_saran', '').strip()
               buffer_caption = input_caption if input_caption else data.get('caption_sosmed', '#reels #viral #fyp')
-          except Exception:
+              
+              print("🎉 Parse JSON Gemini Sukses!")
+              print(f"   📌 Visual Overlay Hook : {text_overlay}")
+              print(f"   📌 Social Caption     : {buffer_caption}")
+
+          except Exception as err:
+              print(f"❌ JSON Parse Error! Memakai mode fallback. Detail: {err}")
+              print(f"📄 Raw Teks dari API: {raw_text}")
+              
               crop_x, crop_y  = 0, int(full_h * 0.34)
               crop_w, crop_h  = full_w, int(full_h * 0.32)
               text_overlay    = "Check this out! 😱🔥"
@@ -266,7 +276,7 @@ jobs:
               f.write(buffer_caption)
 
           try:
-              requests.delete(f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key}")
+              requests.delete(f"[https://generativelanguage.googleapis.com/v1beta/](https://generativelanguage.googleapis.com/v1beta/){file_name}?key={api_key}")
           except Exception: pass
           EOF
           python detect_and_caption.py
@@ -371,7 +381,7 @@ jobs:
           sleep 5
           VIDEO_URL=$(gh api repos/${{ github.repository }}/releases/tags/buffer_video \
             --jq '.assets[0].browser_download_url')
-          if [ -z "$VIDEO_URL" ] || [ "$VIDEO_URL" = "null" ]; then
+          if [ -z "$VIDEO_URL" ] \vert{}\vert{} [ "$VIDEO_URL" = "null" ]; then
             echo "❌ Failed to get video URL from release"
             exit 1
           fi
@@ -429,12 +439,12 @@ jobs:
                   "}) {"
                   "  ... on PostActionSuccess { post { id dueAt } }"
                   "  ... on MutationError { message }"
-                  "} }"
+                   issue "} }"
               )
 
               payload = json.dumps({"query": mutation}).encode("utf-8")
               req = urllib.request.Request(
-                  "https://api.buffer.com/graphql",
+                  "[https://api.buffer.com/graphql](https://api.buffer.com/graphql)",
                   data=payload,
                   headers={
                       "Content-Type": "application/json",
