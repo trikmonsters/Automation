@@ -196,30 +196,51 @@ jobs:
               },
           }
 
-          models = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
+          models = ["gemini-3.6-flash" "gemini-3.5-flash", "gemini-3.1-flash-lite"]
           raw_text = "{}"
           success = False
 
           for model in models:
-              if success: break
-              generate_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-              for attempt in range(5):
-                  try:
-                      res_generate = requests.post(generate_url, json=payload, timeout=90)
-                      response_json = res_generate.json()
-                      if res_generate.status_code == 200 and "candidates" in response_json:
-                          raw_text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
-                          success = True
-                          break
-                      elif res_generate.status_code in [429, 503, 504]:
+          if success: 
+              break
+          print(f"🤖 Memanggil API dengan model: {model}...")
+          generate_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+          
+          for attempt in range(5):
+              try:
+                  res_generate = requests.post(generate_url, json=payload, timeout=90)
+                  response_json = res_generate.json()
+                  
+                  if res_generate.status_code == 200 and "candidates" in response_json:
+                      parts = response_json["candidates"][0]["content"]["parts"]
+                      
+                      # Ekstrak part teks yang berisi JSON (mengabaikan thought trace jika terpisah)
+                      for part in reversed(parts):
+                          text_candidate = part.get("text", "").strip()
+                          if text_candidate and not part.get("thought", False):
+                              raw_text = text_candidate
+                              break
+                      
+                      if not raw_text or raw_text == "{}":
+                          # Fallback ambil part terakhir jika struktur tidak menandai 'thought'
+                          raw_text = parts[-1].get("text", "").strip()
+      
+                      print(f"✅ Berhasil mendapat respons dari {model}!")
+                      success = True
+                      break
+                  else:
+                      print(f"⚠️ API Error Status {res_generate.status_code} ({model}): {res_generate.text}")
+                      if res_generate.status_code in [429, 503, 504]:
                           time.sleep(20)
                       else:
                           break
-                  except requests.exceptions.RequestException:
-                      time.sleep(20)
-
+              except requests.exceptions.RequestException as err:
+                  print(f"⚠️ Network error ({model}): {err}")
+                  time.sleep(20)
+      
           try:
-              data        = json.loads(raw_text)
+              clean_text = raw_text.replace("```json", "").replace("```", "").strip()
+              data        = json.loads(clean_text)
               y_min_pct   = float(data['y_min_persen'])
               y_max_pct   = float(data['y_max_persen'])
               crop_y      = int(y_min_pct * full_h / 100)
