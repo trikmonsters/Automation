@@ -195,7 +195,7 @@ jobs:
               },
           }
 
-          models = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
+          models = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
           raw_text = "{}"
           success = False
 
@@ -312,7 +312,6 @@ jobs:
 
             ffmpeg -i "video_raw.mp4" \
               -vf "crop=${CROP_W}:${CROP_H}:${CROP_X}:${CROP_Y},\
-                   hflip,\
                    scale=1080:1920:force_original_aspect_ratio=decrease,\
                    unsharp=5:5:1.0:5:5:0.0,\
                    pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,\
