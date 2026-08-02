@@ -1,9 +1,6 @@
 name: FTP Upload with Auto Metadata
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 jobs:
@@ -76,13 +73,16 @@ jobs:
       env:
         FTP_PASS: ${{ secrets.DREAMSTIME_PASS }}
       run: |
-        FTP_HOST="://dreamstime.com"
+        FTP_HOST="upload.dreamstime.com"
         FTP_USER="60917417"
         
         echo "Memulai transfer file image/agri.jpg otomatis ke Dreamstime..."
+        
+        # Perbaikan sintaks: menggunakan struktur open ftp://host:port dengan user & pass terpisah
         lftp -e "
           set ftp:passive-mode true;
-          open ftp://$FTP_USER:$FTP_PASS@$FTP_HOST;
+          set ftp:ssl-allow false;
+          open -u $FTP_USER,$FTP_PASS -p 21 $FTP_HOST;
           put -O / image/agri.jpg;
           quit;
         "
