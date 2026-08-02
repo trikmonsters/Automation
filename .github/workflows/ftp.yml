@@ -78,11 +78,12 @@ jobs:
         
         echo "Memulai transfer file image/agri.jpg otomatis ke Dreamstime..."
         
-        # Perbaikan sintaks: menggunakan struktur open ftp://host:port dengan user & pass terpisah
+        # Perbaikan: Menggunakan single quotes ('') untuk membungkus password 
+        # agar karakter khusus seperti '#' dibaca sebagai teks murni oleh bash dan lftp.
         lftp -e "
           set ftp:passive-mode true;
           set ftp:ssl-allow false;
-          open -u $FTP_USER,$FTP_PASS -p 21 $FTP_HOST;
+          open -u $FTP_USER,'$FTP_PASS' -p 21 $FTP_HOST;
           put -O / image/agri.jpg;
           quit;
         "
