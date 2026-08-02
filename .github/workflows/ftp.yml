@@ -1,0 +1,89 @@
+name: FTP Upload with Auto Metadata
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  process-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1. Ambil file dari repositori GitHub
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    # 2. Instal alat pemroses gambar (ImageMagick) dan alat penanam metadata (ExifTool)
+    - name: Install ImageMagick and ExifTool
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y imagemagick exiftool lftp
+
+    # 3. Konversi PNG ke JPG dan Tanam Metadata Manual
+    - name: Process Image and Inject Metadata
+      run: |
+        echo "Mengonversi image/agri.png ke format JPG..."
+        convert image/agri.png image/agri.jpg
+        
+        echo "Menanamkan judul, deskripsi, dan 35 keywords ke image/agri.jpg..."
+        exiftool -overwrite_original \
+          -ObjectName="Modern Asian Female Farmer Using Digital Tablet for Smart Agriculture Monitoring inside High-Tech Hydroponic Greenhouse" \
+          -Caption-Abstract="High-angle shot of a confident modern female farmer inspecting crops using a digital tablet connected to IoT sensors in a clean, high-tech indoor greenhouse. Concept for smart farming, precision agriculture, agrotech innovation, sustainable food production, and eco-friendly technology." \
+          -Keywords="smart farming" \
+          -Keywords="agrotech" \
+          -Keywords="precision agriculture" \
+          -Keywords="hydroponics" \
+          -Keywords="greenhouse" \
+          -Keywords="digital tablet" \
+          -Keywords="iot sensors" \
+          -Keywords="sustainable agriculture" \
+          -Keywords="modern farmer" \
+          -Keywords="asian ethnicity" \
+          -Keywords="crop inspection" \
+          -Keywords="future of farming" \
+          -Keywords="eco friendly" \
+          -Keywords="environmental tech" \
+          -Keywords="agribusiness" \
+          -Keywords="indoor farm" \
+          -Keywords="vertical farming" \
+          -Keywords="smart agriculture" \
+          -Keywords="sustainability" \
+          -Keywords="food security" \
+          -Keywords="data analysis" \
+          -Keywords="automation" \
+          -Keywords="green technology" \
+          -Keywords="organic farming" \
+          -Keywords="plantation" \
+          -Keywords="technology in farming" \
+          -Keywords="high tech" \
+          -Keywords="female entrepreneur" \
+          -Keywords="modern worker" \
+          -Keywords="agricultural science" \
+          -Keywords="smart IoT" \
+          -Keywords="innovative farming" \
+          -Keywords="esg concept" \
+          -Keywords="eco business" \
+          -Keywords="commercial photography" \
+          image/agri.jpg
+          
+        echo "Verifikasi metadata berhasil ditanam:"
+        exiftool -ObjectName -Caption-Abstract -Keywords image/agri.jpg
+
+    # 4. Unggah hasil akhir ke FTP Dreamstime
+    - name: Upload to Dreamstime FTP
+      env:
+        FTP_PASS: ${{ secrets.DREAMSTIME_PASS }}
+      run: |
+        FTP_HOST="://dreamstime.com"
+        FTP_USER="60917417"
+        
+        echo "Memulai transfer file image/agri.jpg otomatis ke Dreamstime..."
+        lftp -e "
+          set ftp:passive-mode true;
+          open ftp://$FTP_USER:$FTP_PASS@$FTP_HOST;
+          put -O / image/agri.jpg;
+          quit;
+        "
+        echo "Proses pengunggahan selesai!"
