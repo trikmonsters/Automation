@@ -1,0 +1,546 @@
+name: Auto IG & Buffer Post
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'Masukkan URL Video Media / Instagram'
+        required: true
+        default: ''
+      caption:
+        description: 'Caption opsional (jika kosong, pakai hasil Gemini)'
+        required: false
+        default: ''
+      post_to_buffer:
+        description: 'Langsung upload ke Buffer?'
+        required: true
+        default: 'true'
+
+permissions:
+  contents: write
+
+jobs:
+  download-video:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install FFmpeg Binary
+        run: |
+          mkdir -p ~/.local/bin
+          curl -L https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ --strip-components=1 -C ~/.local/bin
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install yt-dlp
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install yt-dlp
+
+      - name: Create Downloads Cookie File
+        env:
+          COOKIES_TEXT: ${{ secrets.COOKIE }}
+        run: |
+          mkdir -p downloads
+          echo "$COOKIES_TEXT" > ./cookies.txt
+
+      - name: Download Video via yt-dlp
+        run: |
+          set -e
+          yt-dlp --cookies ./cookies.txt \
+                 --remote-components ejs:github \
+                 -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
+                 --merge-output-format mp4 \
+                 -o "video_raw.mp4" \
+                 "${{ github.event.inputs.video_url }}"
+
+      - name: Upload Raw Video Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-video
+          path: video_raw.mp4
+          retention-days: 1
+
+  process-video:
+    name: RT-DETR Crop & AI Caption
+    needs: download-video
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Processing Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-liberation
+          pip install opencv-python-headless ultralytics requests numpy --quiet
+
+      - name: Download Raw Video Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: raw-video
+
+      - name: RT-DETR Detection & AI Content Generation
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          INPUT_CAPTION: ${{ github.event.inputs.caption }}
+        run: |
+          cat << 'EOF' > process_video.py
+          import cv2
+          import json
+          import os
+          import sys
+          import time
+          import subprocess
+          import requests
+          import textwrap
+          import numpy as np
+          from ultralytics import RTDETR
+
+          def detect_video_with_rtdetr(input_path):
+              """
+              RT-DETR detection - EXACT coordinates (no padding, no adjustments)
+              """
+              # Load RT-DETR model (large for best accuracy)
+              model = RTDETR('rtdetr-l.pt')
+              
+              cap = cv2.VideoCapture(input_path)
+              if not cap.isOpened():
+                  print("❌ Error: Could not open video")
+                  return None
+              
+              width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+              height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+              total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+              
+              print(f"📐 Video: {width}x{height}, {total_frames} frames")
+              
+              # Collect detections from multiple frames
+              all_boxes = []
+              sample_frames = min(20, total_frames)
+              frame_step = max(1, total_frames // sample_frames)
+              
+              for frame_num in range(0, total_frames, frame_step):
+                  cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+                  ret, frame = cap.read()
+                  if not ret:
+                      continue
+                  
+                  # Detect with RT-DETR
+                  results = model(frame, conf=0.3)
+                  
+                  if len(results) > 0 and len(results[0].boxes) > 0:
+                      boxes = results[0].boxes.xyxy.cpu().numpy()
+                      confidences = results[0].boxes.conf.cpu().numpy()
+                      
+                      # Filter high confidence detections
+                      high_conf_boxes = boxes[confidences > 0.5]
+                      
+                      if len(high_conf_boxes) > 0:
+                          # Find largest detection (main video content)
+                          areas = (high_conf_boxes[:, 2] - high_conf_boxes[:, 0]) * \
+                                 (high_conf_boxes[:, 3] - high_conf_boxes[:, 1])
+                          largest_box = high_conf_boxes[np.argmax(areas)]
+                          
+                          x1, y1, x2, y2 = largest_box
+                          all_boxes.append((int(x1), int(y1), int(x2), int(y2)))
+                          print(f"🔄 Frame {frame_num}: ({x1:.0f}, {y1:.0f}, {x2:.0f}, {y2:.0f})")
+              
+              cap.release()
+              
+              if not all_boxes:
+                  print("⚠️ No content detected. Using full frame.")
+                  return (0, 0, width, height)
+              
+              # Calculate average coordinates - EXACT from RT-DETR
+              avg_x1 = int(np.mean([b[0] for b in all_boxes]))
+              avg_y1 = int(np.mean([b[1] for b in all_boxes]))
+              avg_x2 = int(np.mean([b[2] for b in all_boxes]))
+              avg_y2 = int(np.mean([b[3] for b in all_boxes]))
+              
+              # Check consistency
+              std_x1 = np.std([b[0] for b in all_boxes])
+              std_y1 = np.std([b[1] for b in all_boxes])
+              std_x2 = np.std([b[2] for b in all_boxes])
+              std_y2 = np.std([b[3] for b in all_boxes])
+              
+              print(f"\n📊 Average: ({avg_x1}, {avg_y1}) to ({avg_x2}, {avg_y2})")
+              print(f"📊 Std dev: x1={std_x1:.1f}, y1={std_y1:.1f}, x2={std_x2:.1f}, y2={std_y2:.1f}")
+              
+              # If consistent, use exact average. If not, use union.
+              if std_x1 < 50 and std_y1 < 50 and std_x2 < 50 and std_y2 < 50:
+                  print("✅ Consistent detections. Using exact average.")
+                  x1, y1, x2, y2 = avg_x1, avg_y1, avg_x2, avg_y2
+              else:
+                  print("⚠️ Detections vary. Using union of all detections.")
+                  x1 = min([b[0] for b in all_boxes])
+                  y1 = min([b[1] for b in all_boxes])
+                  x2 = max([b[2] for b in all_boxes])
+                  y2 = max([b[3] for b in all_boxes])
+              
+              # Ensure coordinates are within frame bounds (safety only)
+              x1 = max(0, min(width, x1))
+              y1 = max(0, min(height, y1))
+              x2 = max(0, min(width, x2))
+              y2 = max(0, min(height, y2))
+              
+              print(f"\n📐 FINAL CROP: ({x1}, {y1}) to ({x2}, {y2})")
+              print(f"📐 Size: {x2-x1}x{y2-y1}")
+              
+              return (x1, y1, x2, y2)
+
+          def generate_ai_content(video_path, input_caption):
+              """
+              Generate caption and hook using Gemini AI (visual analysis only)
+              """
+              api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+              if not api_key:
+                  print("❌ GEMINI_API_KEY kosong!")
+                  return None
+              
+              # Extract 5-second sample for AI analysis
+              sample_path = "sample_5s.mp4"
+              cap = cv2.VideoCapture(video_path)
+              total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+              fps = cap.get(cv2.CAP_PROP_FPS)
+              total_dur = total_frames / fps
+              cap.release()
+              
+              start_time = max(0, total_dur - 5)
+              cmd_sample = f'ffmpeg -ss {start_time} -i "{video_path}" -t 5 -c:v libx264 -c:a aac "{sample_path}" -y -loglevel quiet'
+              subprocess.run(cmd_sample, shell=True, check=True)
+              
+              # Upload to Gemini
+              file_size = os.path.getsize(sample_path)
+              upload_url = f"https://generativelanguage.googleapis.com/upload/v1beta/files?key={api_key}"
+              headers = {
+                  "X-Goog-Upload-Protocol": "resumable",
+                  "X-Goog-Upload-Command": "start",
+                  "X-Goog-Upload-Header-Content-Length": str(file_size),
+                  "X-Goog-Upload-Header-Content-Type": "video/mp4",
+                  "Content-Type": "application/json"
+              }
+              res_init = requests.post(upload_url, headers=headers, json={"file": {"displayName": "sample_video"}})
+              upload_session_url = res_init.headers.get("X-Goog-Upload-URL")
+              
+              with open(sample_path, "rb") as f:
+                  upload_headers = {
+                      "X-Goog-Upload-Offset": "0",
+                      "X-Goog-Upload-Command": "upload, finalize",
+                      "Content-Type": "video/mp4"
+                  }
+                  res_upload = requests.post(upload_session_url, headers=upload_headers, data=f)
+              
+              file_info = res_upload.json()
+              file_uri = file_info["file"]["uri"]
+              file_name = file_info["file"]["name"]
+              
+              # Wait for processing
+              get_file_url = f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key}"
+              while True:
+                  res_check = requests.get(get_file_url).json()
+                  state = res_check.get("state", "PROCESSING")
+                  if state == "ACTIVE":
+                      break
+                  elif state == "FAILED":
+                      print("❌ Video processing failed!")
+                      return None
+                  time.sleep(2)
+              
+              # Generate caption and hook based on VISUAL content only
+              prompt = """
+              Watch this social media video clip carefully.
+              
+              Based ONLY on the visual content:
+              1. Create a catchy social media caption (max 2 sentences)
+              2. Create a short hook text (max 8 words) for video overlay
+              
+              Do NOT reference any text that appears in the video.
+              Generate completely NEW caption and hook.
+              
+              Return in JSON format:
+              {
+                "caption_sosmed": "Your caption here",
+                "text_overlay_saran": "Your hook here"
+              }
+              """
+              
+              payload = {
+                  "contents": [{
+                      "parts": [
+                          {"fileData": {"fileUri": file_uri, "mimeType": "video/mp4"}},
+                          {"text": prompt}
+                      ]
+                  }],
+                  "generationConfig": {
+                      "maxOutputTokens": 65536,
+                      "responseMimeType": "application/json"
+                  }
+              }
+              
+              generate_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={api_key}"
+              
+              for attempt in range(3):
+                  try:
+                      res = requests.post(generate_url, json=payload, timeout=60)
+                      response_json = res.json()
+                      
+                      if res.status_code == 200 and "candidates" in response_json:
+                          parts = response_json["candidates"][0].get("content", {}).get("parts", [])
+                          text = parts[-1].get("text", "{}")
+                          
+                          # Clean JSON
+                          text = text.replace("```json", "").replace("```", "").strip()
+                          data = json.loads(text)
+                          
+                          # Clean up file
+                          try:
+                              requests.delete(f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key}")
+                          except:
+                              pass
+                          
+                          return data
+                  except Exception as e:
+                      print(f"⚠️ Attempt {attempt+1} failed: {e}")
+                      time.sleep(5)
+              
+              return None
+
+          def main():
+              video_path = "video_raw.mp4"
+              input_caption = os.environ.get("INPUT_CAPTION", "").strip()
+              
+              if not os.path.exists(video_path):
+                  print("❌ Video file not found!")
+                  sys.exit(1)
+              
+              # Step 1: RT-DETR detection - EXACT coordinates
+              print("🔍 Detecting video content with RT-DETR...")
+              crop_coords = detect_video_with_rtdetr(video_path)
+              
+              if not crop_coords:
+                  print("❌ Failed to detect video content!")
+                  sys.exit(1)
+              
+              x1, y1, x2, y2 = crop_coords
+              crop_w = x2 - x1
+              crop_h = y2 - y1
+              
+              # Step 2: AI generation for caption and hook
+              print("🤖 Generating caption and hook with Gemini...")
+              ai_data = generate_ai_content(video_path, input_caption)
+              
+              if ai_data:
+                  buffer_caption = input_caption if input_caption else ai_data.get('caption_sosmed', '#reels #viral #fyp')
+                  text_overlay = ai_data.get('text_overlay_saran', 'Check this out! 🔥')
+                  print(f"✅ Generated caption: {buffer_caption}")
+                  print(f"✅ Generated hook: {text_overlay}")
+              else:
+                  buffer_caption = input_caption if input_caption else "#reels #viral #fyp"
+                  text_overlay = "Check this out! 🔥"
+                  print("⚠️ Using fallback caption and hook")
+              
+              # Step 3: Save parameters
+              with open("crop_params.txt", "w") as f:
+                  f.write(f"CROP_W={crop_w}\nCROP_H={crop_h}\nCROP_X={x1}\nCROP_Y={y1}\n")
+              
+              lines = textwrap.wrap(text_overlay, width=35)
+              with open("text_overlay.txt", "w", encoding="utf-8") as f:
+                  f.write("\n".join(lines))
+              
+              with open("buffer_caption.txt", "w", encoding="utf-8") as f:
+                  f.write(buffer_caption)
+              
+              print("✅ Processing complete!")
+
+          if __name__ == "__main__":
+              main()
+          EOF
+          
+          python process_video.py
+
+      - name: Process Video with FFmpeg
+        run: |
+          source crop_params.txt
+
+          # Ensure crop coordinates are valid
+          if [ "$CROP_Y" -lt 0 ]; then CROP_Y=0; fi
+          if [ "$CROP_X" -lt 0 ]; then CROP_X=0; fi
+
+          FONT_PATH="/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+
+          TEXT_EMPTY=true
+          if [ -s text_overlay.txt ]; then
+            CONTENT=$(cat text_overlay.txt | tr -d '[:space:]')
+            if [ -n "$CONTENT" ]; then TEXT_EMPTY=false; fi
+          fi
+
+          if [ "$TEXT_EMPTY" = true ]; then
+            ffmpeg -i "video_raw.mp4" \
+              -vf "crop=${CROP_W}:${CROP_H}:${CROP_X}:${CROP_Y},\
+                   hflip,\
+                   scale=1080:1920:force_original_aspect_ratio=decrease,\
+                   pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black" \
+              -c:v libx264 -crf 18 -r 30 -c:a aac -b:a 128k \
+              "processed_video.mp4" -y -loglevel quiet
+          else
+            SCALED_H=$(( CROP_H * 1080 / CROP_W ))
+            TOP_PAD=$(( (1920 - SCALED_H) / 2 ))
+            if [ "$TOP_PAD" -lt 0 ]; then TOP_PAD=0; fi
+            TEXT_Y=$(( TOP_PAD / 2 ))
+            if [ "$TEXT_Y" -lt 60 ]; then TEXT_Y=60; fi
+
+            ffmpeg -i "video_raw.mp4" \
+              -vf "crop=${CROP_W}:${CROP_H}:${CROP_X}:${CROP_Y},\
+                   scale=1080:1920:force_original_aspect_ratio=decrease,\
+                   unsharp=5:5:1.0:5:5:0.0,\
+                   pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,\
+                   drawtext=fontfile=${FONT_PATH}:\
+                   textfile=text_overlay.txt:\
+                   x=(w-text_w)/2:y=${TEXT_Y}:\
+                   fontsize=48:fontcolor=white:\
+                   borderw=2:bordercolor=black" \
+              -c:v libx264 -crf 18 -r 30 -c:a aac -b:a 128k \
+              "processed_video.mp4" -y -loglevel quiet
+          fi
+
+      - name: Upload Processed Video Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: processed-video
+          path: |
+            processed_video.mp4
+            buffer_caption.txt
+          retention-days: 1
+
+  publish-buffer:
+    name: Publish to Release & Buffer API
+    needs: process-video
+    if: ${{ github.event.inputs.post_to_buffer == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Processed Video Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: processed-video
+
+      - name: Clean & Re-create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🗑️ Checking for old releases..."
+          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases \
+            --jq '.[] | select(.tag_name == "buffer_video") | .id' 2>/dev/null || echo "")
+          if [ -n "$RELEASE_ID" ]; then
+            gh api -X DELETE repos/${{ github.repository }}/releases/$RELEASE_ID || true
+            sleep 3
+          fi
+          gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/buffer_video || true
+          sleep 3
+
+          echo "📦 Uploading processed_video.mp4 to GitHub Release..."
+          for i in 1 2 3; do
+            gh release create buffer_video \
+              --repo "${{ github.repository }}" \
+              --title "Buffer Video (Temporary Hosting)" \
+              --notes "Temporary hosting for Buffer API. Automatically replaced on next run." \
+              processed_video.mp4#video.mp4 && break
+            sleep 5
+          done
+
+      - name: Get Video URL
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sleep 5
+          VIDEO_URL=$(gh api repos/${{ github.repository }}/releases/tags/buffer_video \
+            --jq '.assets[0].browser_download_url')
+          if [ -z "$VIDEO_URL" ] || [ "$VIDEO_URL" = "null" ]; then
+            echo "❌ Failed to get video URL from release"
+            exit 1
+          fi
+          echo "VIDEO_URL=${VIDEO_URL}" >> $GITHUB_ENV
+
+      - name: Trigger Buffer API
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_V2 }}
+          VIDEO_URL: ${{ env.VIDEO_URL }}
+        run: |
+          python3 - <<'PYEOF'
+          import os
+          import json
+          import urllib.request
+          import urllib.error
+          from datetime import datetime, timezone, timedelta
+
+          api_key   = os.environ["BUFFER_API_KEY"]
+          video_url = os.environ["VIDEO_URL"]
+
+          channels = [
+              {"id": "6a471f4e5ab6d2f1069b6f5e", "platform": "instagram"},
+              {"id": "6a48fcaf5ab6d2f106a37232", "platform": "tiktok"}
+          ]
+
+          caption = ""
+          if os.path.exists("buffer_caption.txt"):
+              with open("buffer_caption.txt", "r", encoding="utf-8") as f:
+                  caption = f.read().strip()
+
+          due_at = (
+              datetime.now(timezone.utc) + timedelta(minutes=2)
+          ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+          print(f"📅 Scheduled time : {due_at}")
+          print(f"🎬 Video URL      : {video_url}")
+          print(f"📝 Caption        : {caption}")
+
+          for ch in channels:
+              channel_id = ch["id"]
+              platform   = ch["platform"]
+              print(f"\n🚀 Posting ke: {channel_id} ({platform})")
+
+              metadata_str = ", metadata: { instagram: { type: reel, shouldShareToFeed: true } }" if platform == "instagram" else ""
+
+              mutation = (
+                  "mutation { createPost(input: {"
+                  "  text: "        + json.dumps(caption)    + ","
+                  "  channelId: "   + json.dumps(channel_id) + ","
+                  "  schedulingType: automatic,"
+                  "  mode: customScheduled,"
+                  "  dueAt: "       + json.dumps(due_at)     + ","
+                  "  assets: [{ video: { url: " + json.dumps(video_url) + " } }]"
+                  + metadata_str +
+                  "}) {"
+                  "  ... on PostActionSuccess { post { id dueAt } }"
+                  "  ... on MutationError { message }"
+                  "} }"
+              )
+
+              payload = json.dumps({"query": mutation}).encode("utf-8")
+              req = urllib.request.Request(
+                  "https://api.buffer.com/graphql",
+                  data=payload,
+                  headers={
+                      "Content-Type": "application/json",
+                      "Authorization": "Bearer " + api_key,
+                  }
+              )
+
+              try:
+                  with urllib.request.urlopen(req) as res:
+                      body = json.loads(res.read().decode("utf-8"))
+                  print(f"✅ Buffer response ({channel_id}):")
+                  print(json.dumps(body, indent=2))
+              except urllib.error.HTTPError as e:
+                  print(f"❌ HTTP Error {e.code} untuk {channel_id}: {e.read().decode()}")
+          PYEOF
