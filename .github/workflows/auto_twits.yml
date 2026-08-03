@@ -1,4 +1,4 @@
-name: Auto IG & Buffer Post
+name: Auto Twits
 
 on:
   workflow_dispatch:
