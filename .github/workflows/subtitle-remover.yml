@@ -139,7 +139,7 @@ jobs:
     needs: [build, prepare]
     runs-on: ubuntu-latest
     container:
-      image: ${{ env.IMAGE }}
+      image: ghcr.io/${{ github.repository_owner }}/subtitle-remover:latest
     strategy:
       fail-fast: false
       matrix:
