@@ -1,0 +1,253 @@
+name: Subtitle Detect, SAM2 Refine & LaMa Inpaint (Video, Chunked, Docker)
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_seconds:
+        description: 'Proses hanya N detik pertama vids.mp4 untuk testing. Isi 0/kosongkan untuk FULL video.'
+        required: false
+        default: '0'
+      num_chunks:
+        description: 'Jumlah chunk paralel (maksimal = jumlah frame video).'
+        required: false
+        default: '15'
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/subtitle-remover:latest
+
+jobs:
+  # ===========================================================================
+  # JOB 1: build
+  # Build & push Docker image berisi semua dependency (torch, easyocr,
+  # ultralytics/SAM2, LaMa repo+patch+deps, checkpoint big-lama) — SAMA
+  # PERSIS step 2-10 dari workflow original, cuma dipindah dari "jalan tiap
+  # job" jadi "jalan sekali di sini". Pakai cache GHA: kalau Dockerfile &
+  # scripts/ tidak berubah dari run sebelumnya, build ini cepat (restore
+  # cache, bukan install ulang dari nol).
+  # ===========================================================================
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & push image (cached)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ===========================================================================
+  # JOB 2: prepare
+  # Extract semua frame + audio dari vids.mp4 (SAMA PERSIS logic original),
+  # lalu potong jadi N chunk dengan overlap TEMPORAL_WINDOW di tiap sisi.
+  # Job ini ringan (cuma ffmpeg + python stdlib), jalan di runner biasa,
+  # jalan paralel dengan job build (tidak saling menunggu).
+  # ===========================================================================
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Extract frames + audio
+        run: |
+          set -e
+          mkdir -p frames_in
+
+          if [ ! -f "vids.mp4" ]; then
+            echo "Error: vids.mp4 tidak ditemukan di root repo!"
+            exit 1
+          fi
+
+          TEST_SECONDS="${{ github.event.inputs.test_seconds }}"
+          INPUT_VIDEO="vids.mp4"
+          if [ -n "$TEST_SECONDS" ] && [ "$TEST_SECONDS" != "0" ]; then
+            echo "Mode TEST: memproses $TEST_SECONDS detik pertama saja."
+            ffmpeg -y -i vids.mp4 -t "$TEST_SECONDS" -c copy vids_trimmed.mp4
+            INPUT_VIDEO="vids_trimmed.mp4"
+          else
+            echo "Mode FULL: memproses seluruh durasi video."
+          fi
+
+          FPS=$(ffprobe -v 0 -of csv=p=0 -select_streams v:0 -show_entries stream=r_frame_rate "$INPUT_VIDEO")
+          echo "$FPS" > fps.txt
+          echo "FPS terdeteksi: $FPS"
+
+          ffmpeg -y -i "$INPUT_VIDEO" frames_in/frame_%06d.png
+
+          ffmpeg -y -i "$INPUT_VIDEO" -vn -acodec copy audio_orig.aac \
+            || echo "Tidak ada audio track (atau gagal extract) — video hasil akan tanpa audio."
+
+          echo "Total frame yang akan diproses: $(ls frames_in | wc -l)"
+
+      - name: Split frames jadi chunk (dengan overlap window temporal)
+        run: |
+          NUM_CHUNKS="${{ github.event.inputs.num_chunks }}"
+          NUM_CHUNKS="${NUM_CHUNKS:-15}"
+          python3 scripts/prepare_chunks.py \
+            --frames-dir frames_in \
+            --num-chunks "$NUM_CHUNKS" \
+            --out-prefix chunk
+
+      - name: Upload chunk frames (1 artifact berisi semua folder chunk_*)
+        uses: actions/upload-artifact@v4
+        with:
+          name: chunks-frames
+          path: chunk_*/
+          retention-days: 1
+
+      - name: Upload metadata (fps, audio)
+        uses: actions/upload-artifact@v4
+        with:
+          name: prepare-meta
+          path: |
+            fps.txt
+            audio_orig.aac
+          if-no-files-found: ignore
+          retention-days: 1
+
+  # ===========================================================================
+  # JOB 3: process (matrix — 15 job paralel)
+  # Tiap job pakai Docker image dari job 'build' yang SUDAH berisi semua
+  # dependency + checkpoint big-lama — TIDAK ADA langkah install/clone/
+  # download di sini, cuma jalankan model. detect_and_mask.py & predict.py
+  # ALGORITMANYA sama persis dengan workflow original, cuma diberi tahu
+  # core-range chunk mana yang harus diproses.
+  # ===========================================================================
+  process:
+    needs: [build, prepare]
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ env.IMAGE }}
+    strategy:
+      fail-fast: false
+      matrix:
+        chunk_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    steps:
+      - name: Download chunk frames
+        uses: actions/download-artifact@v4
+        with:
+          name: chunks-frames
+          path: .
+
+      - name: Cek apakah chunk index ini ada (kalau num_chunks < 15)
+        id: check
+        run: |
+          if [ -d "chunk_${{ matrix.chunk_index }}" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Chunk ${{ matrix.chunk_index }} tidak ada (num_chunks < 15), skip."
+          fi
+
+      - name: Run Subtitle Detection & SAM2 Mask Refine (chunk ini saja)
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          META="chunk_${{ matrix.chunk_index }}/meta.json"
+          CORE_START=$(python3 -c "import json;print(json.load(open('$META'))['core_start_index'])")
+          CORE_END=$(python3 -c "import json;print(json.load(open('$META'))['core_end_index'])")
+          echo "Chunk ${{ matrix.chunk_index }}: core_start_index=$CORE_START core_end_index=$CORE_END"
+          python3 /workspace/scripts/detect_and_mask.py \
+            --frames-dir "chunk_${{ matrix.chunk_index }}" \
+            --outdir "lama_input_${{ matrix.chunk_index }}" \
+            --core-start-index "$CORE_START" \
+            --core-end-index "$CORE_END"
+
+      - name: Run LaMa Inpainting (chunk ini saja)
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          export TORCH_HOME=/opt
+          export PYTHONPATH=/opt/lama_repo
+          echo "Jumlah pasangan frame yang akan di-inpaint: $(ls lama_input_${{ matrix.chunk_index }}/*.png | grep -v _mask | wc -l)"
+          python3 /opt/lama_repo/bin/predict.py \
+            model.path=/opt/big-lama \
+            indir=$(pwd)/lama_input_${{ matrix.chunk_index }} \
+            outdir=$(pwd)/lama_output_${{ matrix.chunk_index }} \
+            dataset.img_suffix=.png
+          echo "Isi lama_output_${{ matrix.chunk_index }}/ (contoh 5 file pertama):"
+          ls "lama_output_${{ matrix.chunk_index }}" | head -5
+
+      - name: Upload hasil chunk ini
+        if: steps.check.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: chunk-output-${{ matrix.chunk_index }}
+          path: lama_output_${{ matrix.chunk_index }}/
+          retention-days: 1
+
+  # ===========================================================================
+  # JOB 4: merge
+  # Gabungkan semua hasil chunk (sudah tidak ada overlap, karena
+  # detect_and_mask.py cuma menulis core range) jadi 1 video utuh + audio
+  # asli, dengan fps asli — SAMA PERSIS langkah reassemble original.
+  # ===========================================================================
+  merge:
+    needs: process
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Download semua hasil chunk
+        uses: actions/download-artifact@v4
+        with:
+          pattern: chunk-output-*
+          path: chunk_outputs
+
+      - name: Download metadata (fps, audio)
+        uses: actions/download-artifact@v4
+        with:
+          name: prepare-meta
+          path: .
+
+      - name: Gabungkan semua frame hasil ke 1 folder terurut
+        run: |
+          set -e
+          mkdir -p lama_output
+          for d in chunk_outputs/*/; do
+            cp "$d"*.png lama_output/ 2>/dev/null || true
+          done
+          echo "Total frame hasil gabungan: $(ls lama_output | grep -c _mask.png || true)"
+
+      - name: Reassemble video (fps asli + audio asli)
+        run: |
+          set -e
+          FPS=$(cat fps.txt)
+          echo "Menggabungkan kembali frame menjadi video (fps=$FPS)..."
+          if [ -f audio_orig.aac ]; then
+            ffmpeg -y -framerate "$FPS" -i lama_output/frame_%06d_mask.png -i audio_orig.aac \
+              -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest output_video.mp4
+          else
+            ffmpeg -y -framerate "$FPS" -i lama_output/frame_%06d_mask.png \
+              -c:v libx264 -pix_fmt yuv420p output_video.mp4
+          fi
+          echo "Video hasil:"
+          ls -la output_video.mp4
+
+      - name: Upload Output Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: subtitle-removed-result
+          path: output_video.mp4
+          retention-days: 7
