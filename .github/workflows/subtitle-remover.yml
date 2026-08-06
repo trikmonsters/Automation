@@ -3,14 +3,10 @@ name: Subtitle Detect, SAM2 Refine & LaMa Inpaint (Video, Chunked, Docker)
 on:
   workflow_dispatch:
     inputs:
-      test_seconds:
-        description: 'Proses hanya N detik pertama vids.mp4 untuk testing. Isi 0/kosongkan untuk FULL video.'
-        required: false
-        default: '0'
       num_chunks:
-        description: 'Jumlah chunk paralel (maksimal = jumlah frame video).'
+        description: 'Jumlah chunk paralel (maksimal = jumlah frame video, maksimal 20 = limit concurrent job GitHub Actions Free/Pro).'
         required: false
-        default: '15'
+        default: '20'
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/subtitle-remover:latest
@@ -80,15 +76,8 @@ jobs:
             exit 1
           fi
 
-          TEST_SECONDS="${{ github.event.inputs.test_seconds }}"
           INPUT_VIDEO="vids.mp4"
-          if [ -n "$TEST_SECONDS" ] && [ "$TEST_SECONDS" != "0" ]; then
-            echo "Mode TEST: memproses $TEST_SECONDS detik pertama saja."
-            ffmpeg -y -i vids.mp4 -t "$TEST_SECONDS" -c copy vids_trimmed.mp4
-            INPUT_VIDEO="vids_trimmed.mp4"
-          else
-            echo "Mode FULL: memproses seluruh durasi video."
-          fi
+          echo "Memproses seluruh durasi video (full, tanpa trim)."
 
           FPS=$(ffprobe -v 0 -of csv=p=0 -select_streams v:0 -show_entries stream=r_frame_rate "$INPUT_VIDEO")
           echo "$FPS" > fps.txt
@@ -104,17 +93,180 @@ jobs:
       - name: Split frames jadi chunk (dengan overlap window temporal)
         run: |
           NUM_CHUNKS="${{ github.event.inputs.num_chunks }}"
-          NUM_CHUNKS="${NUM_CHUNKS:-15}"
+          NUM_CHUNKS="${NUM_CHUNKS:-20}"
           python3 scripts/prepare_chunks.py \
             --frames-dir frames_in \
             --num-chunks "$NUM_CHUNKS" \
             --out-prefix chunk
 
-      - name: Upload chunk frames (1 artifact berisi semua folder chunk_*)
+      # PENTING: upload TIAP chunk sebagai artifact TERPISAH (bukan 1
+      # artifact besar gabungan). Kalau digabung jadi 1 artifact, setiap
+      # dari 15 job 'process' akan mendownload SELURUH artifact itu utuh
+      # (padahal cuma butuh 1/15-nya) — ini bottleneck network yang bikin
+      # job matrix jadi lambat walau prosesnya sendiri paralel. Dengan
+      # artifact terpisah, tiap job cuma download bagiannya sendiri.
+      # `if: always()` di tiap step supaya chunk yang lebih sedikit
+      # (num_chunks < 20) tidak bikin step lain gagal — upload-artifact
+      # akan skip otomatis kalau path tidak ditemukan (if-no-files-found).
+      - name: Upload chunk 0
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: chunks-frames
-          path: chunk_*/
+          name: frames-chunk-0
+          path: chunk_0/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 1
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-1
+          path: chunk_1/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 2
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-2
+          path: chunk_2/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 3
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-3
+          path: chunk_3/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 4
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-4
+          path: chunk_4/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 5
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-5
+          path: chunk_5/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 6
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-6
+          path: chunk_6/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 7
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-7
+          path: chunk_7/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 8
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-8
+          path: chunk_8/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 9
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-9
+          path: chunk_9/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 10
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-10
+          path: chunk_10/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 11
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-11
+          path: chunk_11/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 12
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-12
+          path: chunk_12/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 13
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-13
+          path: chunk_13/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 14
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-14
+          path: chunk_14/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 15
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-15
+          path: chunk_15/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 16
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-16
+          path: chunk_16/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 17
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-17
+          path: chunk_17/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 18
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-18
+          path: chunk_18/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Upload chunk 19
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-chunk-19
+          path: chunk_19/
+          if-no-files-found: ignore
           retention-days: 1
 
       - name: Upload metadata (fps, audio)
@@ -128,7 +280,7 @@ jobs:
           retention-days: 1
 
   # ===========================================================================
-  # JOB 3: process (matrix — 15 job paralel)
+  # JOB 3: process (matrix — 20 job paralel)
   # Tiap job pakai Docker image dari job 'build' yang SUDAH berisi semua
   # dependency + checkpoint big-lama — TIDAK ADA langkah install/clone/
   # download di sini, cuma jalankan model. detect_and_mask.py & predict.py
@@ -143,22 +295,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        chunk_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+        chunk_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
     steps:
-      - name: Download chunk frames
+      # Cuma download artifact chunk milik job INI SENDIRI (bukan semua
+      # 15 chunk sekaligus) — inilah fix utamanya. continue-on-error karena
+      # kalau num_chunks < 20, sebagian index chunk memang tidak ada
+      # artifact-nya sama sekali (bukan error, cuma tidak diproses).
+      - name: Download chunk frames milik job ini saja
+        id: download
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          name: chunks-frames
-          path: .
+          name: frames-chunk-${{ matrix.chunk_index }}
+          path: chunk_${{ matrix.chunk_index }}
 
-      - name: Cek apakah chunk index ini ada (kalau num_chunks < 15)
+      - name: Cek apakah chunk index ini ada (kalau num_chunks < 20)
         id: check
         run: |
-          if [ -d "chunk_${{ matrix.chunk_index }}" ]; then
+          if [ "${{ steps.download.outcome }}" = "success" ] && [ -d "chunk_${{ matrix.chunk_index }}" ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "Chunk ${{ matrix.chunk_index }} tidak ada (num_chunks < 15), skip."
+            echo "Chunk ${{ matrix.chunk_index }} tidak ada (num_chunks < 20), skip."
           fi
 
       - name: Run Subtitle Detection & SAM2 Mask Refine (chunk ini saja)
@@ -168,23 +326,33 @@ jobs:
           CORE_START=$(python3 -c "import json;print(json.load(open('$META'))['core_start_index'])")
           CORE_END=$(python3 -c "import json;print(json.load(open('$META'))['core_end_index'])")
           echo "Chunk ${{ matrix.chunk_index }}: core_start_index=$CORE_START core_end_index=$CORE_END"
+          # --passthrough-dir diarahkan ke folder output LaMa (lama_output_i)
+          # supaya frame ber-mask-kosong (Optimisasi A, skip LaMa) langsung
+          # nyampur jadi hasil akhir tanpa perlu step gabung tambahan.
           python3 /workspace/scripts/detect_and_mask.py \
             --frames-dir "chunk_${{ matrix.chunk_index }}" \
             --outdir "lama_input_${{ matrix.chunk_index }}" \
             --core-start-index "$CORE_START" \
-            --core-end-index "$CORE_END"
+            --core-end-index "$CORE_END" \
+            --passthrough-dir "lama_output_${{ matrix.chunk_index }}"
 
       - name: Run LaMa Inpainting (chunk ini saja)
         if: steps.check.outputs.exists == 'true'
         run: |
           export TORCH_HOME=/opt
           export PYTHONPATH=/opt/lama_repo
-          echo "Jumlah pasangan frame yang akan di-inpaint: $(ls lama_input_${{ matrix.chunk_index }}/*.png | grep -v _mask | wc -l)"
-          python3 /opt/lama_repo/bin/predict.py \
-            model.path=/opt/big-lama \
-            indir=$(pwd)/lama_input_${{ matrix.chunk_index }} \
-            outdir=$(pwd)/lama_output_${{ matrix.chunk_index }} \
-            dataset.img_suffix=.png
+          N_PAIRS=$(ls lama_input_${{ matrix.chunk_index }}/*.png 2>/dev/null | grep -v _mask | wc -l)
+          echo "Jumlah pasangan frame yang akan di-inpaint: $N_PAIRS"
+          if [ "$N_PAIRS" -eq 0 ]; then
+            echo "Semua frame di chunk ini mask-nya kosong (sudah di-passthrough oleh Optimisasi A)."
+            echo "Skip pemanggilan LaMa untuk chunk ini."
+          else
+            python3 /opt/lama_repo/bin/predict.py \
+              model.path=/opt/big-lama \
+              indir=$(pwd)/lama_input_${{ matrix.chunk_index }} \
+              outdir=$(pwd)/lama_output_${{ matrix.chunk_index }} \
+              dataset.img_suffix=.png
+          fi
           echo "Isi lama_output_${{ matrix.chunk_index }}/ (contoh 5 file pertama):"
           ls "lama_output_${{ matrix.chunk_index }}" | head -5
 
