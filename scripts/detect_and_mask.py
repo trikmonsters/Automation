@@ -1,21 +1,5 @@
 #!/usr/bin/env python3
 """
-Subtitle detection + SAM2 mask refine — versi per-chunk.
-
-PENTING: detect_boxes(), merge_boxes(), make_mask(), dan nilai
-TEMPORAL_WINDOW=2 di file ini SAMA PERSIS dengan skrip original
-single-job kamu. Yang berbeda HANYA orkestrasi di main(): sekarang
-menerima folder frame yang sudah dipotong jadi 1 chunk (berisi frame
-"core" milik chunk ini + frame overlap kiri/kanan sebagai konteks
-window temporal), dan hanya menulis output (image+mask) untuk frame di
-dalam core range -- frame overlap cuma dipakai untuk hitung window,
-tidak diikutkan sebagai output supaya tidak ada duplikat saat
-digabung lagi oleh job merge.
-
-Ini membuat hasil tiap frame di dalam core range identik dengan kalau
-skrip original dijalankan atas seluruh video sekaligus, karena window
-+/-TEMPORAL_WINDOW-nya tetap terisi dari frame tetangga asli (bukan
-kosong di sambungan chunk).
 """
 import os
 import sys
@@ -37,7 +21,32 @@ def detect_boxes(frame_path, reader):
     [x1,y1,x2,y2] (sudah dikasih padding kecil). SAMA PERSIS original."""
     image_cv = cv2.imread(frame_path)
     h, w, _ = image_cv.shape
-    results_ocr = reader.readtext(frame_path)
+    # Parameter tambahan di bawah ini mengatur SENSITIVITAS text-detector
+    # (CRAFT) di dalam EasyOCR -- bukan threshold prob (yang tetap 0.15,
+    # tidak diubah). Nilai default EasyOCR (text_threshold=0.7,
+    # low_text=0.4, link_threshold=0.4, mag_ratio=1, contrast_ths=0.1,
+    # adjust_contrast=0.5) dirancang untuk teks dokumen/scan biasa, dan
+    # terbukti (dari pengecekan visual hasil) GAGAL mendeteksi caption
+    # bold-stroke-outline (mis. "mengalami") -- bukan gagal di tahap
+    # confidence filter, tapi gagal di tahap detector-nya SAMA SEKALI
+    # (box tidak pernah diajukan). Diturunkan/dinaikkan di sini supaya
+    # detector lebih sensitif terhadap teks kontras-rendah/stroke-tebal:
+    #   - text_threshold & low_text diturunkan -> makin longgar menandai
+    #     suatu region sebagai kandidat teks.
+    #   - mag_ratio dinaikkan -> frame di-upscale internal dulu sebelum
+    #     dideteksi, membantu teks yang secara relatif kecil di frame.
+    #   - contrast_ths dinaikkan & adjust_contrast dinaikkan -> lebih
+    #     banyak region kontras-rendah (mis. watermark semi-transparan)
+    #     kena penyesuaian kontras sebelum dideteksi.
+    results_ocr = reader.readtext(
+        frame_path,
+        text_threshold=0.4,
+        low_text=0.25,
+        link_threshold=0.3,
+        mag_ratio=1.5,
+        contrast_ths=0.2,
+        adjust_contrast=0.7,
+    )
     boxes = []
     for (bbox, text, prob) in results_ocr:
         if prob > 0.15:
@@ -117,9 +126,21 @@ def main():
                               "ini sampai akhir cuma dipakai sebagai konteks window temporal "
                               "(overlap kanan).")
     parser.add_argument("--sam2-weights", default=os.environ.get("SAM2_WEIGHTS_PATH", "sam2_l.pt"))
+    parser.add_argument("--passthrough-dir", default=None,
+                         help="[Optimisasi A] Kalau diisi: frame dengan mask KOSONG (tidak ada "
+                              "subtitle terdeteksi di window) tidak ditulis ke --outdir (jadi "
+                              "tidak diproses LaMa sama sekali), melainkan langsung dicopy ke "
+                              "folder ini sebagai '{name}_mask.png' -- nama file yang sama "
+                              "seperti output LaMa. Ini AMAN karena LaMa dengan mask kosong "
+                              "secara matematis cuma menghasilkan balikan gambar aslinya "
+                              "(output = original*(1-mask) + generated*mask, mask=0 di semua "
+                              "pixel -> output = original). Kalau tidak diisi, perilaku SAMA "
+                              "PERSIS seperti sebelumnya (semua frame ditulis ke --outdir).")
     args = parser.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
+    if args.passthrough_dir:
+        os.makedirs(args.passthrough_dir, exist_ok=True)
 
     frame_paths = sorted(glob.glob(os.path.join(args.frames_dir, "*.png")))
     if not frame_paths:
@@ -157,6 +178,7 @@ def main():
     t2 = time.time()
     n_with_text = 0
     n_written = 0
+    n_skipped_lama = 0
     core_total = max(0, core_end - core_start)
     for i in range(core_start, core_end):
         frame_path = frame_paths[i]
@@ -168,12 +190,27 @@ def main():
             window_boxes.extend(all_boxes[j])
         merged = merge_boxes(window_boxes)
 
+        name = os.path.splitext(os.path.basename(frame_path))[0]
+
+        if not merged and args.passthrough_dir:
+            # [Optimisasi A] Mask kosong -> skip LaMa sepenuhnya, langsung
+            # copy frame asli sebagai hasil akhir. Matematis identik dengan
+            # hasil kalau frame ini tetap dikirim ke LaMa dengan mask nol.
+            image_cv = cv2.imread(frame_path)
+            cv2.imwrite(os.path.join(args.passthrough_dir, f"{name}_mask.png"), image_cv)
+            n_skipped_lama += 1
+            n_written += 1
+            elapsed = time.time() - t0
+            if n_written % 10 == 0 or n_written == core_total:
+                print(f"  [{n_written}/{core_total}] {os.path.basename(frame_path)} "
+                      f"- 0 box - SKIP LaMa (passthrough) - {elapsed:.2f}s")
+            continue
+
         h, w = frame_shape
         refined_mask = make_mask(frame_path, merged, sam_model, h, w)
         if merged:
             n_with_text += 1
 
-        name = os.path.splitext(os.path.basename(frame_path))[0]
         image_cv = cv2.imread(frame_path)
         cv2.imwrite(os.path.join(args.outdir, f"{name}.png"), image_cv)
         cv2.imwrite(os.path.join(args.outdir, f"{name}_mask.png"), refined_mask)
@@ -188,6 +225,8 @@ def main():
     avg = total_elapsed / max(1, core_total)
     print(f"\nTahap 2 selesai dalam {total_elapsed:.1f}s (rata-rata {avg:.2f}s/frame).")
     print(f"Frame dengan mask (setelah gabungan window): {n_with_text}/{core_total}")
+    if args.passthrough_dir:
+        print(f"Frame di-skip dari LaMa (mask kosong, passthrough): {n_skipped_lama}/{core_total}")
     print(f"\nTOTAL waktu deteksi+mask (tahap 1+2) chunk ini: {time.time() - t1:.1f}s")
 
 
