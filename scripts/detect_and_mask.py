@@ -1,5 +1,21 @@
 #!/usr/bin/env python3
 """
+Subtitle detection + SAM2 mask refine — versi per-chunk.
+
+STATUS PERUBAHAN DARI SKRIP ORIGINAL:
+- detect_boxes(), merge_boxes(), make_mask(), dan TEMPORAL_WINDOW=2
+  SAMA PERSIS dengan skrip original single-job kamu (parameter
+  sensitivitas EasyOCR yang sempat dicoba dinaikkan sudah DIKEMBALIKAN
+  ke default -- terbukti menyebabkan false positive di tekstur batu/
+  kristal, lihat komentar di dalam detect_boxes()).
+- Orkestrasi di main() menerima folder frame yang sudah dipotong jadi
+  1 chunk (berisi frame "core" milik chunk ini + frame overlap
+  kiri/kanan sebagai konteks window temporal), dan hanya menulis
+  output (image+mask) untuk frame di dalam core range -- frame overlap
+  cuma dipakai untuk hitung window, tidak diikutkan sebagai output.
+- [Optimisasi A] Frame dengan mask kosong (tidak ada teks terdeteksi
+  di window) di-passthrough langsung tanpa lewat LaMa (matematis
+  identik, lihat komentar di --passthrough-dir).
 """
 import os
 import sys
@@ -21,32 +37,17 @@ def detect_boxes(frame_path, reader):
     [x1,y1,x2,y2] (sudah dikasih padding kecil). SAMA PERSIS original."""
     image_cv = cv2.imread(frame_path)
     h, w, _ = image_cv.shape
-    # Parameter tambahan di bawah ini mengatur SENSITIVITAS text-detector
-    # (CRAFT) di dalam EasyOCR -- bukan threshold prob (yang tetap 0.15,
-    # tidak diubah). Nilai default EasyOCR (text_threshold=0.7,
-    # low_text=0.4, link_threshold=0.4, mag_ratio=1, contrast_ths=0.1,
-    # adjust_contrast=0.5) dirancang untuk teks dokumen/scan biasa, dan
-    # terbukti (dari pengecekan visual hasil) GAGAL mendeteksi caption
-    # bold-stroke-outline (mis. "mengalami") -- bukan gagal di tahap
-    # confidence filter, tapi gagal di tahap detector-nya SAMA SEKALI
-    # (box tidak pernah diajukan). Diturunkan/dinaikkan di sini supaya
-    # detector lebih sensitif terhadap teks kontras-rendah/stroke-tebal:
-    #   - text_threshold & low_text diturunkan -> makin longgar menandai
-    #     suatu region sebagai kandidat teks.
-    #   - mag_ratio dinaikkan -> frame di-upscale internal dulu sebelum
-    #     dideteksi, membantu teks yang secara relatif kecil di frame.
-    #   - contrast_ths dinaikkan & adjust_contrast dinaikkan -> lebih
-    #     banyak region kontras-rendah (mis. watermark semi-transparan)
-    #     kena penyesuaian kontras sebelum dideteksi.
-    results_ocr = reader.readtext(
-        frame_path,
-        text_threshold=0.4,
-        low_text=0.25,
-        link_threshold=0.3,
-        mag_ratio=1.5,
-        contrast_ths=0.2,
-        adjust_contrast=0.7,
-    )
+    # CATATAN: sempat dicoba menaikkan sensitivitas text-detector EasyOCR
+    # (text_threshold/low_text/link_threshold diturunkan, mag_ratio/
+    # contrast_ths/adjust_contrast dinaikkan) untuk menangkap caption
+    # bold-stroke-outline yang sebelumnya lolos. TERBUKTI SALAH ARAH:
+    # sensitivitas berlebih membuat EasyOCR mendeteksi tekstur (batu,
+    # kristal, gradasi warna) sebagai "teks" -> SAM2+LaMa memproses area
+    # yang sebenarnya BUKAN subtitle -> muncul kotak blur di tempat yang
+    # tadinya bersih. Dikembalikan ke parameter default EasyOCR (baseline
+    # yang terbukti bekerja di test awal), sambil dicari akar masalah
+    # yang lebih tepat untuk caption yang lolos.
+    results_ocr = reader.readtext(frame_path)
     boxes = []
     for (bbox, text, prob) in results_ocr:
         if prob > 0.15:
