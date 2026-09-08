@@ -1,0 +1,381 @@
+name: Auto Twits
+
+on:
+  workflow_dispatch:
+    inputs:
+      caption:
+        description: 'Caption override manual (kosongkan untuk pakai hasil SEO Gemini)'
+        required: false
+        default: ''
+      post_to_buffer:
+        description: 'Langsung upload ke Buffer?'
+        required: true
+        default: 'true'
+
+permissions:
+  contents: write
+
+jobs:
+  download-video:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get Next Video URL from videos.json
+        run: |
+          set -e
+          if [ ! -f videos.json ]; then
+            echo "❌ videos.json tidak ditemukan di root repo!"
+            exit 1
+          fi
+
+          VIDEO_URL=$(python3 -c "
+          import json
+          with open('videos.json') as f:
+              data = json.load(f)
+          print(data[0] if data else '')
+          ")
+
+          if [ -z "$VIDEO_URL" ]; then
+            echo "❌ videos.json kosong, tidak ada video tersisa untuk diproses."
+            exit 1
+          fi
+
+          echo "VIDEO_URL=${VIDEO_URL}" >> $GITHUB_ENV
+          echo "🎬 Video URL berikutnya: ${VIDEO_URL}"
+
+      - name: Install FFmpeg Binary
+        run: |
+          mkdir -p ~/.local/bin
+          curl -L https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ --strip-components=1 -C ~/.local/bin
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install yt-dlp
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install yt-dlp
+
+      - name: Create Downloads Cookie File
+        env:
+          COOKIES_TEXT: ${{ secrets.COOKIE }}
+        run: |
+          mkdir -p downloads
+          echo "$COOKIES_TEXT" > ./cookies.txt
+
+      - name: Download Video via yt-dlp
+        run: |
+          set -e
+          yt-dlp --cookies ./cookies.txt \
+                 --remote-components ejs:github \
+                 -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
+                 --merge-output-format mp4 \
+                 -o "video_raw.mp4" \
+                 "${VIDEO_URL}"
+
+      - name: Remove Used URL from videos.json & Commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          python3 -c "
+          import json
+          with open('videos.json') as f:
+              data = json.load(f)
+          data.pop(0)
+          with open('videos.json', 'w') as f:
+              json.dump(data, f, indent=2)
+              f.write('\n')
+          "
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add videos.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: remove processed video url from queue"
+            git push
+          else
+            echo "ℹ️ Tidak ada perubahan pada videos.json"
+          fi
+
+      - name: Upload Raw Video Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-video
+          path: video_raw.mp4
+          retention-days: 1
+
+  publish-buffer:
+    name: Gemini SEO Metadata & Publish to Buffer
+    needs: download-video
+    if: ${{ github.event.inputs.post_to_buffer == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Raw Video Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: raw-video
+
+      - name: Rename to processed_video.mp4
+        run: mv video_raw.mp4 processed_video.mp4
+
+      - name: Install Python Dependencies
+        run: pip install requests --quiet
+
+      - name: Generate SEO Metadata with Gemini
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          INPUT_CAPTION: ${{ github.event.inputs.caption }}
+        run: |
+          cat << 'EOF' > generate_seo.py
+          import os
+          import json
+          import time
+          import requests
+
+          def generate_seo_metadata(video_path):
+              api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+              if not api_key:
+                  print("❌ GEMINI_API_KEY kosong!")
+                  return None
+
+              file_size = os.path.getsize(video_path)
+              upload_url = f"https://generativelanguage.googleapis.com/upload/v1beta/files?key={api_key}"
+              headers = {
+                  "X-Goog-Upload-Protocol": "resumable",
+                  "X-Goog-Upload-Command": "start",
+                  "X-Goog-Upload-Header-Content-Length": str(file_size),
+                  "X-Goog-Upload-Header-Content-Type": "video/mp4",
+                  "Content-Type": "application/json"
+              }
+              res_init = requests.post(upload_url, headers=headers, json={"file": {"displayName": "seo_video"}})
+              upload_session_url = res_init.headers.get("X-Goog-Upload-URL")
+
+              with open(video_path, "rb") as f:
+                  upload_headers = {
+                      "X-Goog-Upload-Offset": "0",
+                      "X-Goog-Upload-Command": "upload, finalize",
+                      "Content-Type": "video/mp4"
+                  }
+                  res_upload = requests.post(upload_session_url, headers=upload_headers, data=f)
+
+              file_info = res_upload.json()
+              file_uri = file_info["file"]["uri"]
+              file_name = file_info["file"]["name"]
+
+              get_file_url = f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key}"
+              while True:
+                  res_check = requests.get(get_file_url).json()
+                  state = res_check.get("state", "PROCESSING")
+                  if state == "ACTIVE":
+                      break
+                  elif state == "FAILED":
+                      print("❌ Video processing di Gemini gagal!")
+                      return None
+                  time.sleep(2)
+
+              prompt = """
+              Tonton video ini secara menyeluruh (visual, aksi, dan konteks yang terlihat).
+
+              Buatkan metadata SEO untuk posting video pendek ini ke TikTok:
+              1. "caption_sosmed": caption menarik & SEO-friendly (maks 2-3 kalimat, boleh pakai emoji secukupnya) yang mendorong engagement dan mengandung kata kunci relevan dengan isi video.
+              2. "hashtags": array 5-8 hashtag yang relevan, populer, dan SEO-friendly untuk TikTok (tanpa spasi, tanpa simbol # di dalam string, cukup kata/frasenya saja).
+              3. "title_seo": judul singkat SEO-friendly (maks 60 karakter) yang menggambarkan isi video.
+
+              Jangan mereferensikan teks apapun yang muncul di dalam video.
+
+              Balas HANYA dalam format JSON:
+              {
+                "caption_sosmed": "...",
+                "hashtags": ["...", "..."],
+                "title_seo": "..."
+              }
+              """
+
+              payload = {
+                  "contents": [{
+                      "parts": [
+                          {"fileData": {"fileUri": file_uri, "mimeType": "video/mp4"}},
+                          {"text": prompt}
+                      ]
+                  }],
+                  "generationConfig": {
+                      "maxOutputTokens": 65536,
+                      "responseMimeType": "application/json"
+                  }
+              }
+
+              generate_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={api_key}"
+
+              result = None
+              for attempt in range(3):
+                  try:
+                      res = requests.post(generate_url, json=payload, timeout=120)
+                      response_json = res.json()
+
+                      if res.status_code == 200 and "candidates" in response_json:
+                          parts = response_json["candidates"][0].get("content", {}).get("parts", [])
+                          text = parts[-1].get("text", "{}")
+                          text = text.replace("```json", "").replace("```", "").strip()
+                          result = json.loads(text)
+                          break
+                      else:
+                          print(f"⚠️ Attempt {attempt+1}: unexpected response: {response_json}")
+                  except Exception as e:
+                      print(f"⚠️ Attempt {attempt+1} failed: {e}")
+                  time.sleep(5)
+
+              try:
+                  requests.delete(f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key}")
+              except Exception:
+                  pass
+
+              return result
+
+          def main():
+              video_path = "processed_video.mp4"
+              input_caption = os.environ.get("INPUT_CAPTION", "").strip()
+
+              if input_caption:
+                  print(f"✍️ Menggunakan caption manual dari input: {input_caption}")
+                  final_caption = input_caption
+              else:
+                  print("🤖 Menganalisis video dengan Gemini untuk metadata SEO...")
+                  seo_data = generate_seo_metadata(video_path)
+
+                  if seo_data:
+                      caption = seo_data.get("caption_sosmed", "").strip()
+                      hashtags = seo_data.get("hashtags", [])
+                      title_seo = seo_data.get("title_seo", "")
+
+                      hashtag_str = " ".join(f"#{h.lstrip('#').replace(' ', '')}" for h in hashtags)
+                      final_caption = f"{caption}\n\n{hashtag_str}".strip()
+
+                      print(f"✅ Title SEO   : {title_seo}")
+                      print(f"✅ Caption     : {caption}")
+                      print(f"✅ Hashtags    : {hashtag_str}")
+                  else:
+                      print("⚠️ Gagal mendapatkan metadata dari Gemini, pakai caption fallback.")
+                      final_caption = "#fyp #viral #trending"
+
+              with open("buffer_caption.txt", "w", encoding="utf-8") as f:
+                  f.write(final_caption)
+
+              print("✅ Metadata SEO selesai disiapkan.")
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          python generate_seo.py
+
+      - name: Clean & Re-create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🗑️ Checking for old releases..."
+          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases \
+            --jq '.[] | select(.tag_name == "buffer_video") | .id' 2>/dev/null || echo "")
+          if [ -n "$RELEASE_ID" ]; then
+            gh api -X DELETE repos/${{ github.repository }}/releases/$RELEASE_ID || true
+            sleep 3
+          fi
+          gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/buffer_video || true
+          sleep 3
+
+          echo "📦 Uploading processed_video.mp4 to GitHub Release..."
+          for i in 1 2 3; do
+            gh release create buffer_video \
+              --repo "${{ github.repository }}" \
+              --title "Buffer Video (Temporary Hosting)" \
+              --notes "Temporary hosting for Buffer API. Automatically replaced on next run." \
+              processed_video.mp4#video.mp4 && break
+            sleep 5
+          done
+
+      - name: Get Video URL
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sleep 5
+          VIDEO_URL=$(gh api repos/${{ github.repository }}/releases/tags/buffer_video \
+            --jq '.assets[0].browser_download_url')
+          if [ -z "$VIDEO_URL" ] || [ "$VIDEO_URL" = "null" ]; then
+            echo "❌ Failed to get video URL from release"
+            exit 1
+          fi
+          echo "VIDEO_URL=${VIDEO_URL}" >> $GITHUB_ENV
+
+      - name: Trigger Buffer API
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_V2 }}
+          VIDEO_URL: ${{ env.VIDEO_URL }}
+        run: |
+          python3 - <<'PYEOF'
+          import os
+          import json
+          import urllib.request
+          import urllib.error
+          from datetime import datetime, timezone, timedelta
+
+          api_key   = os.environ["BUFFER_API_KEY"]
+          video_url = os.environ["VIDEO_URL"]
+
+          channels = [
+              {"id": "6a9d5ac4cd8b9c702c180973", "platform": "tiktok"}
+          ]
+
+          caption = ""
+          if os.path.exists("buffer_caption.txt"):
+              with open("buffer_caption.txt", "r", encoding="utf-8") as f:
+                  caption = f.read().strip()
+
+          due_at = (
+              datetime.now(timezone.utc) + timedelta(minutes=2)
+          ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+          print(f"📅 Scheduled time : {due_at}")
+          print(f"🎬 Video URL      : {video_url}")
+          print(f"📝 Caption        : {caption}")
+
+          for ch in channels:
+              channel_id = ch["id"]
+              platform   = ch["platform"]
+              print(f"\n🚀 Posting ke: {channel_id} ({platform})")
+
+              mutation = (
+                  "mutation { createPost(input: {"
+                  "  text: "        + json.dumps(caption)    + ","
+                  "  channelId: "   + json.dumps(channel_id) + ","
+                  "  schedulingType: automatic,"
+                  "  mode: customScheduled,"
+                  "  dueAt: "       + json.dumps(due_at)     + ","
+                  "  assets: [{ video: { url: " + json.dumps(video_url) + " } }]"
+                  "}) {"
+                  "  ... on PostActionSuccess { post { id dueAt } }"
+                  "  ... on MutationError { message }"
+                  "} }"
+              )
+
+              payload = json.dumps({"query": mutation}).encode("utf-8")
+              req = urllib.request.Request(
+                  "https://api.buffer.com/graphql",
+                  data=payload,
+                  headers={
+                      "Content-Type": "application/json",
+                      "Authorization": "Bearer " + api_key,
+                  }
+              )
+
+              try:
+                  with urllib.request.urlopen(req) as res:
+                      body = json.loads(res.read().decode("utf-8"))
+                  print(f"✅ Buffer response ({channel_id}):")
+                  print(json.dumps(body, indent=2))
+              except urllib.error.HTTPError as e:
+                  print(f"❌ HTTP Error {e.code} untuk {channel_id}: {e.read().decode()}")
+          PYEOF
