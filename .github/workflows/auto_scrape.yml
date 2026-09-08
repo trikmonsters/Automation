@@ -1,0 +1,230 @@
+name: Update YouTube Video URLs
+
+on:
+  schedule:
+    # Berjalan setiap hari pukul 00:00 UTC
+    - cron: "0 0 * * *"
+
+  # Bisa dijalankan secara manual dari GitHub Actions
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-videos:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Fetch and update YouTube URLs
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: |
+          python <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          API_KEY = os.environ.get("YOUTUBE_API_KEY")
+
+          if not API_KEY:
+              print("Error: Secret YOUTUBE_API_KEY belum dibuat.")
+              sys.exit(1)
+
+          CHANNELS = [
+              "UCfVeIiHNWuCb0NLIQHCIbng",
+              "UCSxTmOCD00RxNRnZ2ovI3GA",
+              "UCOwGdMxFohlE8l86kUWfsmw",
+              "UC9wDddhQHgt9_7Db8dnYUbg"
+          ]
+
+          OUTPUT_FILE = Path("videos.json")
+
+          def youtube_request(endpoint, params):
+              params = dict(params)
+              params["key"] = API_KEY
+
+              url = (
+                  "https://www.googleapis.com/youtube/v3/"
+                  + endpoint
+                  + "?"
+                  + urllib.parse.urlencode(params)
+              )
+
+              try:
+                  with urllib.request.urlopen(url) as response:
+                      return json.loads(response.read().decode("utf-8"))
+
+              except urllib.error.HTTPError as error:
+                  error_body = error.read().decode("utf-8")
+                  print(f"YouTube API error: {error.code}")
+                  print(error_body)
+                  sys.exit(1)
+
+              except Exception as error:
+                  print(f"Request error: {error}")
+                  sys.exit(1)
+
+          def get_uploads_playlist_id(channel_id):
+              data = youtube_request(
+                  "channels",
+                  {
+                      "id": channel_id,
+                      "part": "contentDetails"
+                  }
+              )
+
+              if not data.get("items"):
+                  print(f"Channel tidak ditemukan: {channel_id}")
+                  return None
+
+              return (
+                  data["items"][0]
+                  ["contentDetails"]
+                  ["relatedPlaylists"]
+                  ["uploads"]
+              )
+
+          def get_video_urls_from_channel(channel_id):
+              playlist_id = get_uploads_playlist_id(channel_id)
+
+              if not playlist_id:
+                  return []
+
+              video_urls = []
+              page_token = None
+
+              while True:
+                  request_params = {
+                      "playlistId": playlist_id,
+                      "part": "snippet",
+                      "maxResults": 50
+                  }
+
+                  if page_token:
+                      request_params["pageToken"] = page_token
+
+                  data = youtube_request(
+                      "playlistItems",
+                      request_params
+                  )
+
+                  for item in data.get("items", []):
+                      snippet = item.get("snippet", {})
+                      resource_id = snippet.get("resourceId", {})
+                      video_id = resource_id.get("videoId")
+
+                      if not video_id:
+                          continue
+
+                      video_url = (
+                          f"https://www.youtube.com/watch?v={video_id}"
+                      )
+
+                      video_urls.append(video_url)
+
+                  page_token = data.get("nextPageToken")
+
+                  if not page_token:
+                      break
+
+              return video_urls
+
+          def load_old_urls():
+              if not OUTPUT_FILE.exists():
+                  return []
+
+              try:
+                  old_data = json.loads(
+                      OUTPUT_FILE.read_text(encoding="utf-8")
+                  )
+
+              except Exception as error:
+                  print(f"Gagal membaca videos.json: {error}")
+                  return []
+
+              if not isinstance(old_data, list):
+                  return []
+
+              old_urls = []
+
+              for item in old_data:
+                  # Format baru: URL langsung
+                  if isinstance(item, str):
+                      url = item
+
+                  # Kompatibel dengan format lama:
+                  # {"videoUrl": "...", "title": "..."}
+                  elif isinstance(item, dict):
+                      url = item.get("videoUrl")
+
+                  else:
+                      url = None
+
+                  # Hapus duplikasi tanpa mengubah urutan
+                  if url and url not in old_urls:
+                      old_urls.append(url)
+
+              return old_urls
+
+          old_urls = load_old_urls()
+
+          # Set hanya dipakai untuk mengecek duplikasi.
+          # Urutan utama tetap disimpan dalam list.
+          existing_urls = set(old_urls)
+
+          new_urls = []
+
+          for channel_id in CHANNELS:
+              print(f"Mengambil video dari channel: {channel_id}")
+
+              channel_urls = get_video_urls_from_channel(channel_id)
+
+              for video_url in channel_urls:
+                  if video_url not in existing_urls:
+                      new_urls.append(video_url)
+                      existing_urls.add(video_url)
+
+          # Data lama tetap di depan.
+          # URL baru ditambahkan di bagian akhir.
+          updated_urls = old_urls + new_urls
+
+          OUTPUT_FILE.write_text(
+              json.dumps(
+                  updated_urls,
+                  indent=2,
+                  ensure_ascii=False
+              ) + "\n",
+              encoding="utf-8"
+          )
+
+          print(f"Jumlah URL lama : {len(old_urls)}")
+          print(f"Jumlah URL baru : {len(new_urls)}")
+          print(f"Jumlah total    : {len(updated_urls)}")
+          PY
+
+      - name: Commit updated videos.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add videos.json
+
+          if git diff --cached --quiet; then
+            echo "Tidak ada URL video baru."
+          else
+            git commit -m "Update YouTube video URLs"
+            git push
+          fi
