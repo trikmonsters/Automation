@@ -44,10 +44,15 @@ jobs:
               sys.exit(1)
 
           CHANNELS = [
-              "UCfVeIiHNWuCb0NLIQHCIbng",
-              "UCSxTmOCD00RxNRnZ2ovI3GA",
-              "UCOwGdMxFohlE8l86kUWfsmw",
-              "UC9wDddhQHgt9_7Db8dnYUbg"
+              "UCdlu-RGo973Dh90S3XpgaZA",
+              "UCLcXtdDwFQ-GpuP1abrI_kA",
+              "UCw0B4GH81N9wrEe5mdzMlxw",
+              "UCikdzRk1H010MTNhjeTDo5w",
+              "UCDo6OKj_pp8E3JuJvf9hl4g",
+              "UCiz_YSPN2OOSEkji2ApFKMQ",
+              "UCuRu6aXgnkHkb-jAkfghHnA",
+              "UC7mBX83aqcw4Grf65i35Auw",
+              "UC4rY--NXJx77mAsQe6I5UJQ",
           ]
 
           OUTPUT_FILE = Path("videos.json")
