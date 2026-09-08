@@ -1,0 +1,949 @@
+name: Auto YouTube to Buffer TikTok
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+
+  publish-to-buffer:
+    name: Download YouTube & Post to TikTok
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ============================================================
+      # 1. CHECKOUT REPOSITORY
+      # ============================================================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+
+      # ============================================================
+      # 2. VALIDATE videos.json
+      # ============================================================
+      - name: Validate videos.json
+        run: |
+          set -e
+
+          if [ ! -f "videos.json" ]; then
+            echo "❌ videos.json tidak ditemukan di root repository!"
+            exit 1
+          fi
+
+          echo "📄 videos.json:"
+          cat videos.json
+
+          python3 - <<'PY'
+          import json
+          import sys
+
+          try:
+              with open("videos.json", "r", encoding="utf-8") as f:
+                  videos = json.load(f)
+          except Exception as e:
+              print(f"❌ videos.json tidak valid: {e}")
+              sys.exit(1)
+
+          if not isinstance(videos, list):
+              print("❌ videos.json harus berupa JSON array")
+              sys.exit(1)
+
+          if not videos:
+              print("❌ videos.json kosong")
+              sys.exit(1)
+
+          for i, url in enumerate(videos, 1):
+              if not isinstance(url, str):
+                  print(f"❌ Item #{i} bukan string URL")
+                  sys.exit(1)
+
+              if not url.strip():
+                  print(f"❌ Item #{i} kosong")
+                  sys.exit(1)
+
+          print()
+          print(f"✅ Total video: {len(videos)}")
+          PY
+
+
+      # ============================================================
+      # 3. INSTALL YT-DLP
+      # ============================================================
+      - name: Install yt-dlp
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install --upgrade yt-dlp
+
+          yt-dlp --version
+
+
+      # ============================================================
+      # 4. CREATE COOKIES
+      # ============================================================
+      - name: Create YouTube Cookies
+        env:
+          COOKIES_TEXT: ${{ secrets.COOKIE }}
+        run: |
+          if [ -n "$COOKIES_TEXT" ]; then
+            echo "$COOKIES_TEXT" > cookies.txt
+            echo "✅ YouTube cookies tersedia"
+          else
+            echo "⚠️ COOKIE secret kosong"
+            touch cookies.txt
+          fi
+
+
+      # ============================================================
+      # 5. PROCESS VIDEOS
+      # ============================================================
+      - name: Download YouTube Videos & Post to Buffer
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_V2 }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+
+        run: |
+
+          set -e
+
+          python3 <<'PY'
+
+          import os
+          import json
+          import subprocess
+          import urllib.request
+          import urllib.error
+          import time
+          import uuid
+          from datetime import datetime, timezone, timedelta
+
+
+          # ========================================================
+          # CONFIG
+          # ========================================================
+
+          REPO = os.environ["REPOSITORY"]
+
+          BUFFER_API_KEY = os.environ.get(
+              "BUFFER_API_KEY",
+              ""
+          ).strip()
+
+
+          if not BUFFER_API_KEY:
+              print("❌ BUFFER_V2 secret kosong!")
+              raise SystemExit(1)
+
+
+          # ========================================================
+          # BUFFER TIKTOK CHANNEL
+          # ========================================================
+
+          TIKTOK_CHANNEL_ID = "6a48fcaf5ab6d2f106a37232"
+
+
+          # ========================================================
+          # LOAD videos.json
+          # ========================================================
+
+          with open(
+              "videos.json",
+              "r",
+              encoding="utf-8"
+          ) as f:
+
+              videos = json.load(f)
+
+
+          if not isinstance(videos, list):
+
+              print(
+                  "❌ videos.json harus berupa array"
+              )
+
+              raise SystemExit(1)
+
+
+          print()
+          print("=" * 70)
+          print("AUTO YOUTUBE → BUFFER → TIKTOK")
+          print("=" * 70)
+          print(
+              f"Total video dalam videos.json: {len(videos)}"
+          )
+          print("=" * 70)
+
+
+          # ========================================================
+          # DEFAULT CAPTION
+          #
+          # TEMPORARY
+          #
+          # Nanti bagian ini bisa diganti Gemini.
+          # ========================================================
+
+          DEFAULT_CAPTION = "#fyp #viral #tiktok"
+
+
+          # ========================================================
+          # LOOP VIDEOS
+          # ========================================================
+
+          for index, youtube_url in enumerate(
+              videos,
+              start=1
+          ):
+
+              youtube_url = str(
+                  youtube_url
+              ).strip()
+
+
+              print()
+              print()
+              print("=" * 70)
+              print(
+                  f"VIDEO {index}/{len(videos)}"
+              )
+              print("=" * 70)
+
+              print(
+                  f"🔗 YouTube URL:\n{youtube_url}"
+              )
+
+
+              # ====================================================
+              # VALIDATE URL
+              # ====================================================
+
+              if not youtube_url:
+
+                  print(
+                      "⚠️ URL kosong. Skip."
+                  )
+
+                  continue
+
+
+              if (
+                  "youtube.com" not in youtube_url
+                  and
+                  "youtu.be" not in youtube_url
+              ):
+
+                  print(
+                      "⚠️ Bukan URL YouTube. Skip."
+                  )
+
+                  continue
+
+
+              # ====================================================
+              # GET VIDEO ID
+              # ====================================================
+
+              print()
+              print(
+                  "🔎 Mengambil YouTube video ID..."
+              )
+
+
+              id_result = subprocess.run(
+                  [
+                      "yt-dlp",
+                      "--get-id",
+                      "--skip-download",
+                      "--no-warnings",
+                      "--no-playlist",
+                      youtube_url
+                  ],
+                  capture_output=True,
+                  text=True
+              )
+
+
+              youtube_id = ""
+
+
+              if id_result.stdout.strip():
+
+                  youtube_id = (
+                      id_result
+                      .stdout
+                      .strip()
+                      .splitlines()[0]
+                      .strip()
+                  )
+
+
+              if not youtube_id:
+
+                  print(
+                      "❌ Tidak bisa mendapatkan "
+                      "YouTube video ID"
+                  )
+
+                  if id_result.stderr:
+
+                      print(
+                          id_result.stderr
+                      )
+
+                  continue
+
+
+              print(
+                  f"🎬 YouTube ID: {youtube_id}"
+              )
+
+
+              # ====================================================
+              # LOCAL FILE
+              # ====================================================
+
+              output_file = (
+                  f"video_{index}_{youtube_id}.mp4"
+              )
+
+
+              # ====================================================
+              # DOWNLOAD
+              # ====================================================
+
+              print()
+              print(
+                  "⬇️ Downloading YouTube video..."
+              )
+
+
+              yt_command = [
+
+                  "yt-dlp",
+
+                  "--remote-components",
+                  "ejs:github",
+
+                  "-f",
+                  (
+                      "bestvideo[ext=mp4]"
+                      "+bestaudio[ext=m4a]"
+                      "/best[ext=mp4]"
+                      "/best"
+                  ),
+
+                  "--merge-output-format",
+                  "mp4",
+
+                  "--no-playlist",
+
+                  "-o",
+                  output_file,
+
+                  youtube_url
+              ]
+
+
+              # ====================================================
+              # USE COOKIES IF AVAILABLE
+              # ====================================================
+
+              if (
+                  os.path.exists("cookies.txt")
+                  and
+                  os.path.getsize("cookies.txt") > 0
+              ):
+
+                  yt_command.insert(
+                      1,
+                      "--cookies"
+                  )
+
+                  yt_command.insert(
+                      2,
+                      "cookies.txt"
+                  )
+
+
+              download_result = subprocess.run(
+                  yt_command
+              )
+
+
+              if download_result.returncode != 0:
+
+                  print()
+                  print(
+                      "❌ Download gagal"
+                  )
+
+                  continue
+
+
+              if not os.path.exists(
+                  output_file
+              ):
+
+                  print(
+                      "❌ File video tidak ditemukan"
+                  )
+
+                  continue
+
+
+              file_size = os.path.getsize(
+                  output_file
+              )
+
+
+              print()
+              print(
+                  "✅ Download berhasil"
+              )
+
+              print(
+                  f"📦 Size: "
+                  f"{file_size / 1024 / 1024:.2f} MB"
+              )
+
+
+              # ====================================================
+              # ====================================================
+              # GEMINI METADATA PLACEHOLDER
+              # ====================================================
+              #
+              # NANTI GEMINI DITAMBAHKAN DI SINI.
+              #
+              # Contoh:
+              #
+              # caption = generate_gemini_metadata(
+              #     output_file
+              # )
+              #
+              # Untuk sekarang:
+              # ====================================================
+
+              caption = DEFAULT_CAPTION
+
+
+              print()
+              print(
+                  "📝 TikTok Caption:"
+              )
+
+              print(caption)
+
+
+              # ====================================================
+              # CREATE UNIQUE RELEASE
+              # ====================================================
+
+              timestamp = (
+                  datetime
+                  .now(timezone.utc)
+                  .strftime(
+                      "%Y%m%d-%H%M%S"
+                  )
+              )
+
+
+              unique_id = uuid.uuid4().hex[:8]
+
+
+              release_tag = (
+                  f"buffer-tiktok-"
+                  f"{timestamp}-"
+                  f"{index}-"
+                  f"{unique_id}"
+              )
+
+
+              release_title = (
+                  f"Buffer TikTok "
+                  f"{timestamp} "
+                  f"#{index}"
+              )
+
+
+              print()
+              print(
+                  "📦 Creating GitHub Release..."
+              )
+
+              print(
+                  f"🏷️ Release tag: "
+                  f"{release_tag}"
+              )
+
+
+              release_result = subprocess.run(
+                  [
+                      "gh",
+                      "release",
+                      "create",
+                      release_tag,
+
+                      "--repo",
+                      REPO,
+
+                      "--title",
+                      release_title,
+
+                      "--notes",
+                      (
+                          "Temporary video hosting "
+                          "for Buffer API."
+                      ),
+
+                      f"{output_file}#video.mp4"
+                  ],
+                  env=os.environ
+              )
+
+
+              if (
+                  release_result.returncode
+                  != 0
+              ):
+
+                  print(
+                      "❌ Gagal membuat "
+                      "GitHub Release"
+                  )
+
+                  try:
+                      os.remove(
+                          output_file
+                      )
+                  except:
+                      pass
+
+                  continue
+
+
+              # ====================================================
+              # GET PUBLIC VIDEO URL
+              # ====================================================
+
+              print()
+              print(
+                  "🔎 Mengambil public video URL..."
+              )
+
+
+              video_url = ""
+
+
+              for attempt in range(10):
+
+                  try:
+
+                      release_result = (
+                          subprocess.run(
+                              [
+                                  "gh",
+                                  "api",
+                                  (
+                                      f"repos/{REPO}"
+                                      f"/releases/tags/"
+                                      f"{release_tag}"
+                                  ),
+                                  "--jq",
+                                  (
+                                      ".assets[0]"
+                                      ".browser_download_url"
+                                  )
+                              ],
+                              capture_output=True,
+                              text=True
+                          )
+                      )
+
+
+                      candidate = (
+                          release_result
+                          .stdout
+                          .strip()
+                      )
+
+
+                      if (
+                          candidate
+                          and
+                          candidate != "null"
+                      ):
+
+                          video_url = candidate
+
+                          break
+
+
+                  except Exception as e:
+
+                      print(
+                          f"⚠️ Attempt "
+                          f"{attempt + 1}: {e}"
+                      )
+
+
+                  time.sleep(3)
+
+
+              if not video_url:
+
+                  print(
+                      "❌ Gagal mendapatkan "
+                      "public video URL"
+                  )
+
+                  try:
+                      os.remove(
+                          output_file
+                      )
+                  except:
+                      pass
+
+                  continue
+
+
+              print()
+              print(
+                  "🌐 Public Video URL:"
+              )
+
+              print(video_url)
+
+
+              # ====================================================
+              # SCHEDULE TIME
+              # ====================================================
+
+              # Video pertama  = +2 menit
+              # Video kedua    = +4 menit
+              # Video ketiga   = +6 menit
+              # dst.
+
+              due_at = (
+                  datetime.now(timezone.utc)
+                  +
+                  timedelta(
+                      minutes=2 * index
+                  )
+              ).strftime(
+                  "%Y-%m-%dT%H:%M:%S.000Z"
+              )
+
+
+              print()
+              print(
+                  f"📅 Buffer schedule: "
+                  f"{due_at}"
+              )
+
+
+              # ====================================================
+              # BUFFER GRAPHQL MUTATION
+              # ====================================================
+
+              mutation = (
+
+                  "mutation { createPost(input: {"
+
+                  " text: "
+                  +
+                  json.dumps(
+                      caption
+                  )
+
+                  +
+
+                  ", channelId: "
+                  +
+                  json.dumps(
+                      TIKTOK_CHANNEL_ID
+                  )
+
+                  +
+
+                  ", schedulingType: automatic"
+
+                  +
+
+                  ", mode: customScheduled"
+
+                  +
+
+                  ", dueAt: "
+                  +
+                  json.dumps(
+                      due_at
+                  )
+
+                  +
+
+                  ", assets: [{ video: { url: "
+                  +
+                  json.dumps(
+                      video_url
+                  )
+                  +
+                  " } }]"
+
+                  +
+
+                  "}) {"
+
+                  +
+
+                  " ... on PostActionSuccess "
+                  "{ post { id dueAt } }"
+
+                  +
+
+                  " ... on MutationError "
+                  "{ message }"
+
+                  +
+
+                  "} }"
+              )
+
+
+              payload = json.dumps(
+                  {
+                      "query": mutation
+                  }
+              ).encode(
+                  "utf-8"
+              )
+
+
+              request = urllib.request.Request(
+
+                  "https://api.buffer.com/graphql",
+
+                  data=payload,
+
+                  headers={
+                      "Content-Type":
+                          "application/json",
+
+                      "Authorization":
+                          "Bearer "
+                          +
+                          BUFFER_API_KEY
+                  }
+              )
+
+
+              # ====================================================
+              # SEND TO BUFFER
+              # ====================================================
+
+              print()
+              print(
+                  "🚀 Sending video to Buffer..."
+              )
+
+              print(
+                  "📱 Platform: TikTok"
+              )
+
+              print(
+                  f"📺 Channel ID: "
+                  f"{TIKTOK_CHANNEL_ID}"
+              )
+
+
+              try:
+
+                  with urllib.request.urlopen(
+                      request
+                  ) as response:
+
+                      response_body = json.loads(
+                          response
+                          .read()
+                          .decode(
+                              "utf-8"
+                          )
+                      )
+
+
+                  print()
+                  print(
+                      "📨 Buffer Response:"
+                  )
+
+                  print(
+                      json.dumps(
+                          response_body,
+                          indent=2,
+                          ensure_ascii=False
+                      )
+                  )
+
+
+                  # =================================================
+                  # CHECK GRAPHQL ERROR
+                  # =================================================
+
+                  if response_body.get(
+                      "errors"
+                  ):
+
+                      print()
+                      print(
+                          "❌ Buffer GraphQL error"
+                      )
+
+                  else:
+
+                      # Check actual mutation result
+                      data = response_body.get(
+                          "data",
+                          {}
+                      )
+
+                      create_post = data.get(
+                          "createPost",
+                          {}
+                      )
+
+
+                      if create_post.get(
+                          "post"
+                      ):
+
+                          post = (
+                              create_post[
+                                  "post"
+                              ]
+                          )
+
+                          print()
+                          print(
+                              "✅ BERHASIL POST "
+                              "KE BUFFER"
+                          )
+
+                          print(
+                              f"🆔 Post ID: "
+                              f"{post.get('id')}"
+                          )
+
+                          print(
+                              f"📅 Due At: "
+                              f"{post.get('dueAt')}"
+                          )
+
+                      elif create_post.get(
+                          "message"
+                      ):
+
+                          print()
+                          print(
+                              "❌ Buffer error:"
+                          )
+
+                          print(
+                              create_post[
+                                  "message"
+                              ]
+                          )
+
+                      else:
+
+                          print()
+                          print(
+                              "⚠️ Buffer response "
+                              "tidak terduga"
+                          )
+
+
+              except urllib.error.HTTPError as e:
+
+                  error_body = (
+                      e.read()
+                      .decode(
+                          "utf-8",
+                          errors="replace"
+                      )
+                  )
+
+
+                  print()
+                  print(
+                      f"❌ Buffer HTTP Error "
+                      f"{e.code}"
+                  )
+
+                  print(
+                      error_body
+                  )
+
+
+              except Exception as e:
+
+                  print()
+                  print(
+                      "❌ Buffer request error:"
+                  )
+
+                  print(e)
+
+
+              # ====================================================
+              # DELETE LOCAL VIDEO
+              # ====================================================
+
+              try:
+
+                  os.remove(
+                      output_file
+                  )
+
+                  print()
+                  print(
+                      "🧹 Local video deleted"
+                  )
+
+              except Exception:
+
+                  pass
+
+
+              # ====================================================
+              # NEXT VIDEO
+              # ====================================================
+
+              print()
+              print("=" * 70)
+
+              print(
+                  f"✅ VIDEO "
+                  f"{index}/{len(videos)} "
+                  f"SELESAI"
+              )
+
+              print("=" * 70)
+
+
+          # ========================================================
+          # FINISHED
+          # ========================================================
+
+          print()
+          print()
+          print("=" * 70)
+          print(
+              "🎉 SEMUA VIDEO SELESAI"
+          )
+          print(
+              "🎬 YouTube → Buffer → TikTok"
+          )
+          print("=" * 70)
+
+          PY
