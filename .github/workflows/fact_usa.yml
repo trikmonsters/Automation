@@ -63,7 +63,7 @@ jobs:
 
       - name: Create Downloads Cookie File
         env:
-          COOKIES_TEXT: ${{ secrets.COOKIE }}
+          COOKIES_TEXT: ${{ secrets.COOKIE_YT }}
         run: |
           mkdir -p downloads
           echo "$COOKIES_TEXT" > ./cookies.txt
