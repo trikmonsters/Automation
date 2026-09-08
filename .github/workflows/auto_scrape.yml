@@ -2,10 +2,8 @@ name: Update YouTube Video URLs
 
 on:
   schedule:
-    # Berjalan setiap hari pukul 00:00 UTC
-    - cron: "0 0 * * *"
+    - cron: "0 */6 * * *"
 
-  # Bisa dijalankan secara manual dari GitHub Actions
   workflow_dispatch:
 
 permissions:
