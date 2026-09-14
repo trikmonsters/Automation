@@ -348,8 +348,9 @@ jobs:
                 text: {json.dumps(caption)}
                 channelId: {json.dumps(channel_id)}
                 schedulingType: automatic
-                mode: customScheduled
-                dueAt: {json.dumps(due_at)}
+                mode: addToQueue
+                # mode: customScheduled
+                # dueAt: {json.dumps(due_at)}
                 assets: [{{ video: {{ url: {json.dumps(video_url)} }} }}]
               }}
             ) {{
