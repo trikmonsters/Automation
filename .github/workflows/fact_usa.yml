@@ -1,4 +1,4 @@
-name: Auto Twits
+name: Auto TikUS
 
 on:
   workflow_dispatch:
@@ -179,16 +179,16 @@ jobs:
                   time.sleep(2)
 
               prompt = """
-              Tonton video ini secara menyeluruh (visual, aksi, dan konteks yang terlihat).
+              Watch this video thoroughly (visuals, actions, and visible context).
 
-              Buatkan metadata SEO untuk posting video pendek ini ke TikTok:
-              1. "caption_sosmed": caption menarik & SEO-friendly (maks 2-3 kalimat, boleh pakai emoji secukupnya) yang mendorong engagement dan mengandung kata kunci relevan dengan isi video.
-              2. "hashtags": array 5-8 hashtag yang relevan, populer, dan SEO-friendly untuk TikTok (tanpa spasi, tanpa simbol # di dalam string, cukup kata/frasenya saja).
-              3. "title_seo": judul singkat SEO-friendly (maks 60 karakter) yang menggambarkan isi video.
+              Create SEO metadata for posting this short video to TikTok (target audience: USA):
+              1. "caption_sosmed": an engaging & SEO-friendly caption in ENGLISH (max 2-3 sentences, emojis allowed sparingly) that drives engagement and contains keywords relevant to the video content.
+              2. "hashtags": array of 5-8 relevant, popular, and SEO-friendly hashtags for TikTok in ENGLISH (no spaces, no # symbol inside strings, just the word/phrase).
+              3. "title_seo": a short SEO-friendly title in ENGLISH (max 60 characters) describing the video content.
 
-              Jangan mereferensikan teks apapun yang muncul di dalam video.
+              Do not reference any text that appears in the video.
 
-              Balas HANYA dalam format JSON:
+              Reply ONLY in JSON format:
               {
                 "caption_sosmed": "...",
                 "hashtags": ["...", "..."],
@@ -279,19 +279,19 @@ jobs:
         run: |
           echo "🗑️ Checking for old releases..."
           RELEASE_ID=$(gh api repos/${{ github.repository }}/releases \
-            --jq '.[] | select(.tag_name == "buffer_video") | .id' 2>/dev/null || echo "")
+            --jq '.[] | select(.tag_name == "fact_usa") | .id' 2>/dev/null || echo "")
           if [ -n "$RELEASE_ID" ]; then
             gh api -X DELETE repos/${{ github.repository }}/releases/$RELEASE_ID || true
             sleep 3
           fi
-          gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/buffer_video || true
+          gh api -X DELETE repos/${{ github.repository }}/git/refs/tags/fact_usa || true
           sleep 3
 
           echo "📦 Uploading processed_video.mp4 to GitHub Release..."
           for i in 1 2 3; do
-            gh release create buffer_video \
+            gh release create fact_usa \
               --repo "${{ github.repository }}" \
-              --title "Buffer Video (Temporary Hosting)" \
+              --title "Fact USA Video (Temporary Hosting)" \
               --notes "Temporary hosting for Buffer API. Automatically replaced on next run." \
               processed_video.mp4#video.mp4 && break
             sleep 5
@@ -302,7 +302,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           sleep 5
-          VIDEO_URL=$(gh api repos/${{ github.repository }}/releases/tags/buffer_video \
+          VIDEO_URL=$(gh api repos/${{ github.repository }}/releases/tags/fact_usa \
             --jq '.assets[0].browser_download_url')
           if [ -z "$VIDEO_URL" ] || [ "$VIDEO_URL" = "null" ]; then
             echo "❌ Failed to get video URL from release"
@@ -315,67 +315,67 @@ jobs:
           BUFFER_API_KEY: ${{ secrets.BUFFER_V2 }}
           VIDEO_URL: ${{ env.VIDEO_URL }}
         run: |
+          set -e
+          echo "📤 Sending post payload to Buffer API..."
           python3 - <<'PYEOF'
           import os
           import json
+          import sys
           import urllib.request
           import urllib.error
           from datetime import datetime, timezone, timedelta
 
-          api_key   = os.environ["BUFFER_API_KEY"]
+          api_key = os.environ["BUFFER_API_KEY"]
           video_url = os.environ["VIDEO_URL"]
-
-          channels = [
-              {"id": "6a9d5ac4cd8b9c702c180973", "platform": "tiktok"}
-          ]
 
           caption = ""
           if os.path.exists("buffer_caption.txt"):
               with open("buffer_caption.txt", "r", encoding="utf-8") as f:
                   caption = f.read().strip()
 
-          due_at = (
-              datetime.now(timezone.utc) + timedelta(minutes=2)
-          ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+          due_at = (datetime.now(timezone.utc) + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
           print(f"📅 Scheduled time : {due_at}")
           print(f"🎬 Video URL      : {video_url}")
           print(f"📝 Caption        : {caption}")
 
-          for ch in channels:
-              channel_id = ch["id"]
-              platform   = ch["platform"]
-              print(f"\n🚀 Posting ke: {channel_id} ({platform})")
+          channel_id = "6a9d5ac4cd8b9c702c180973"
 
-              mutation = (
-                  "mutation { createPost(input: {"
-                  "  text: "        + json.dumps(caption)    + ","
-                  "  channelId: "   + json.dumps(channel_id) + ","
-                  "  schedulingType: automatic,"
-                  "  mode: customScheduled,"
-                  "  dueAt: "       + json.dumps(due_at)     + ","
-                  "  assets: [{ video: { url: " + json.dumps(video_url) + " } }]"
-                  "}) {"
-                  "  ... on PostActionSuccess { post { id dueAt } }"
-                  "  ... on MutationError { message }"
-                  "} }"
-              )
+          mutation = f"""
+          mutation CreatePost {{
+            createPost(
+              input: {{
+                text: {json.dumps(caption)}
+                channelId: {json.dumps(channel_id)}
+                schedulingType: automatic
+                mode: customScheduled
+                dueAt: {json.dumps(due_at)}
+                assets: [{{ video: {{ url: {json.dumps(video_url)} }} }}]
+              }}
+            ) {{
+              ... on PostActionSuccess {{ post {{ id dueAt }} }}
+              ... on MutationError {{ message }}
+            }}
+          }}
+          """
 
-              payload = json.dumps({"query": mutation}).encode("utf-8")
-              req = urllib.request.Request(
-                  "https://api.buffer.com/graphql",
-                  data=payload,
-                  headers={
-                      "Content-Type": "application/json",
-                      "Authorization": "Bearer " + api_key,
-                  }
-              )
+          payload = json.dumps({"query": mutation}).encode("utf-8")
 
-              try:
-                  with urllib.request.urlopen(req) as res:
-                      body = json.loads(res.read().decode("utf-8"))
-                  print(f"✅ Buffer response ({channel_id}):")
+          req = urllib.request.Request(
+              "https://api.buffer.com/graphql",
+              data=payload,
+              headers={
+                  "Content-Type": "application/json",
+                  "Authorization": f"Bearer {api_key}",
+              }
+          )
+
+          try:
+              with urllib.request.urlopen(req) as res:
+                  body = json.loads(res.read().decode("utf-8"))
+                  print("✅ Buffer response:")
                   print(json.dumps(body, indent=2))
-              except urllib.error.HTTPError as e:
-                  print(f"❌ HTTP Error {e.code} untuk {channel_id}: {e.read().decode()}")
+          except urllib.error.HTTPError as e:
+              print(f"❌ HTTP Error {e.code}: {e.read().decode()}")
+              sys.exit(1)
           PYEOF
