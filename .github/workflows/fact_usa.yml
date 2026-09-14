@@ -339,7 +339,7 @@ jobs:
           print(f"🎬 Video URL      : {video_url}")
           print(f"📝 Caption        : {caption}")
 
-          channel_id = "6a9d5ac4cd8b9c702c180973"
+          channel_id = "6aa7ac58ea19ca0bde3cfb0f"
 
           mutation = f"""
           mutation CreatePost {{
