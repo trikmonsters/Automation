@@ -70,7 +70,7 @@ jobs:
       - name: Upload to FB Reels
         env:
           FB_PAGE_ID: ${{ inputs.fb_page_id }}
-          FB_TOKEN: ${{ secrets[inputs.token_key] }}
+          FB_TOKEN: ${{ inputs.token_key }}
           VIDEO_ID: ${{ inputs.video_id }}
           VIDEO_TITLE: ${{ inputs.video_title }}
         run: |
