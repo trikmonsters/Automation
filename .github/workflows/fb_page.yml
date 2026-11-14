@@ -44,7 +44,7 @@ jobs:
 
       - name: Create Cookie File from Secret
         env:
-          COOKIES_TEXT: ${{ secrets.COOKIE }}
+          COOKIES_TEXT: ${{ secrets.COOKIE_YT }}
         run: |
           echo "$COOKIES_TEXT" > ./cookies.txt
 
