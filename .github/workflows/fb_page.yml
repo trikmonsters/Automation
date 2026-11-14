@@ -1,0 +1,109 @@
+name: Upload YouTube Video to FB Reels
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_id:
+        required: true
+        type: string
+      channel_id:
+        required: true
+        type: string
+      fb_page_id:
+        required: true
+        type: string
+      token_key:
+        required: true
+        type: string
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Setup yt-dlp
+        uses: AnimMouse/setup-yt-dlp@v3
+        with:
+          ffmpeg: true
+
+      - name: Download video
+        run: |
+          yt-dlp \
+            -f "best[ext=mp4]/best" \
+            --no-playlist \
+            --no-warnings \
+            -o "video.mp4" \
+            "https://www.youtube.com/watch?v=${{ inputs.video_id }}"
+
+          ls -lh video.mp4
+
+      - name: Upload to FB Reels
+        env:
+          FB_PAGE_ID: ${{ inputs.fb_page_id }}
+          FB_TOKEN: ${{ secrets[inputs.token_key] }}
+          VIDEO_ID: ${{ inputs.video_id }}
+          CHANNEL_ID: ${{ inputs.channel_id }}
+        run: |
+          set -euo pipefail
+
+          echo "== Start upload session =="
+          START_RESP=$(curl -sS -X POST \
+            "https://graph.facebook.com/v24.0/${FB_PAGE_ID}/video_reels" \
+            -d "upload_phase=start" \
+            -d "access_token=${FB_TOKEN}")
+
+          echo "Start response: ${START_RESP}"
+
+          VIDEO_SESSION_ID=$(echo "${START_RESP}" | jq -r '.video_id // empty')
+          UPLOAD_URL=$(echo "${START_RESP}" | jq -r '.upload_url // empty')
+
+          if [ -z "${VIDEO_SESSION_ID}" ] || [ -z "${UPLOAD_URL}" ]; then
+            echo "Gagal mendapatkan video_id / upload_url"
+            exit 1
+          fi
+
+          FILE_SIZE=$(stat -c%s video.mp4)
+          echo "File size: ${FILE_SIZE} bytes"
+
+          echo "== Upload binary =="
+          UPLOAD_HTTP=$(curl -sS -o upload_resp.json -w "%{http_code}" \
+            -X POST "${UPLOAD_URL}" \
+            -H "Authorization: OAuth ${FB_TOKEN}" \
+            -H "offset: 0" \
+            -H "file_size: ${FILE_SIZE}" \
+            --data-binary "@video.mp4")
+
+          echo "Upload HTTP: ${UPLOAD_HTTP}"
+          cat upload_resp.json || true
+
+          if [ "${UPLOAD_HTTP}" != "200" ]; then
+            echo "Upload binary gagal"
+            exit 1
+          fi
+
+          echo "== Finish / publish =="
+          FINISH_RESP=$(curl -sS -X POST \
+            "https://graph.facebook.com/v24.0/${FB_PAGE_ID}/video_reels" \
+            -d "access_token=${FB_TOKEN}" \
+            -d "video_id=${VIDEO_SESSION_ID}" \
+            -d "upload_phase=finish" \
+            -d "video_state=PUBLISHED" \
+            -d "description=Video ${VIDEO_ID}")
+
+          echo "Finish response: ${FINISH_RESP}"
+
+          echo "== Polling status =="
+          for i in $(seq 1 12); do
+            sleep 10
+            STATUS_RESP=$(curl -sS \
+              "https://graph.facebook.com/v24.0/${VIDEO_SESSION_ID}?fields=status&access_token=${FB_TOKEN}")
+            echo "Poll ${i}: ${STATUS_RESP}"
+            VIDEO_STATUS=$(echo "${STATUS_RESP}" | jq -r '.status.video_status // empty')
+            if [ "${VIDEO_STATUS}" = "ready" ]; then
+              echo "Video siap."
+              break
+            fi
+          done
+
+          echo "Selesai."
