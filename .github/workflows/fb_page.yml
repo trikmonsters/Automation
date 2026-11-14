@@ -6,6 +6,9 @@ on:
       video_id:
         required: true
         type: string
+      video_title:
+        required: true
+        type: string
       channel_id:
         required: true
         type: string
@@ -19,33 +22,64 @@ on:
 jobs:
   upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 300
 
     steps:
-      - name: Setup yt-dlp
-        uses: AnimMouse/setup-yt-dlp@v3
-        with:
-          ffmpeg: true
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
 
-      - name: Download video
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install yt-dlp Binary
+        run: |
+          mkdir -p ~/.local/bin
+          curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ~/.local/bin/yt-dlp
+          chmod +x ~/.local/bin/yt-dlp
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Create Cookie File from Secret
+        env:
+          COOKIES_TEXT: ${{ secrets.COOKIE }}
+        run: |
+          echo "$COOKIES_TEXT" > ./cookies.txt
+
+      - name: Download Video with yt-dlp
+        env:
+          VIDEO_ID: ${{ inputs.video_id }}
         run: |
           yt-dlp \
-            -f "best[ext=mp4]/best" \
-            --no-playlist \
-            --no-warnings \
-            -o "video.mp4" \
-            "https://www.youtube.com/watch?v=${{ inputs.video_id }}"
-
-          ls -lh video.mp4
+            --cookies ./cookies.txt \
+            --remote-components ejs:github \
+            -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
+            --merge-output-format mp4 \
+            --restrict-filenames \
+            -o "%(title)s.%(ext)s" \
+            "https://www.youtube.com/watch?v=${VIDEO_ID}"
+            
+          DOWNLOADED_FILE=$(ls -t *.mp4 | head -n 1)
+          echo "VIDEO_FILE=${DOWNLOADED_FILE}" >> $GITHUB_ENV
+          
+          echo "Berhasil mengunduh: ${DOWNLOADED_FILE}"
+          ls -lh "${DOWNLOADED_FILE}"
 
       - name: Upload to FB Reels
         env:
           FB_PAGE_ID: ${{ inputs.fb_page_id }}
           FB_TOKEN: ${{ secrets[inputs.token_key] }}
           VIDEO_ID: ${{ inputs.video_id }}
-          CHANNEL_ID: ${{ inputs.channel_id }}
+          VIDEO_TITLE: ${{ inputs.video_title }}
         run: |
           set -euo pipefail
+          
+          FILE_NAME="${VIDEO_FILE}"
+          echo "Memproses file: ${FILE_NAME}"
+          
+          CAPTION=$(echo "$VIDEO_TITLE" | sed 's/"/\\"/g')
 
           echo "== Start upload session =="
           START_RESP=$(curl -sS -X POST \
@@ -63,7 +97,7 @@ jobs:
             exit 1
           fi
 
-          FILE_SIZE=$(stat -c%s video.mp4)
+          FILE_SIZE=$(stat -c%s "${FILE_NAME}")
           echo "File size: ${FILE_SIZE} bytes"
 
           echo "== Upload binary =="
@@ -72,7 +106,7 @@ jobs:
             -H "Authorization: OAuth ${FB_TOKEN}" \
             -H "offset: 0" \
             -H "file_size: ${FILE_SIZE}" \
-            --data-binary "@video.mp4")
+            --data-binary "@${FILE_NAME}")
 
           echo "Upload HTTP: ${UPLOAD_HTTP}"
           cat upload_resp.json || true
@@ -89,7 +123,7 @@ jobs:
             -d "video_id=${VIDEO_SESSION_ID}" \
             -d "upload_phase=finish" \
             -d "video_state=PUBLISHED" \
-            -d "description=Video ${VIDEO_ID}")
+            -d "description=${CAPTION}")
 
           echo "Finish response: ${FINISH_RESP}"
 
